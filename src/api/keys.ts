@@ -37,7 +37,7 @@ export async function handleCreateVendorKey(
         };
 
         if (!body.vendor_name) {
-            return errorResponse("vendor_name is required");
+            body.vendor_name = "manus";
         }
         if (!body.api_key) {
             return errorResponse("api_key is required");
@@ -128,20 +128,32 @@ export async function handleCreateCustomKey(
             key_name?: string;
             api_key?: string;
             usage_limit?: number;
+            expires_at?: string | null;
         };
 
         if (!body.key_name) {
-            return errorResponse("key_name is required");
+            body.key_name = "vbdo007_freekey";
         }
 
         // Generate API key if not provided
         const apiKey = body.api_key || generateApiKey("ck");
 
+        // Validate expires_at if provided
+        let expiresAt: string | null = null;
+        if (body.expires_at) {
+            const date = new Date(body.expires_at);
+            if (isNaN(date.getTime())) {
+                return errorResponse("Invalid expires_at date format", 400);
+            }
+            expiresAt = date.toISOString();
+        }
+
         const key = await createCustomKey(
             db,
             body.key_name,
             apiKey,
-            body.usage_limit ?? -1
+            body.usage_limit ?? -1,
+            expiresAt
         );
 
         if (!key) {
@@ -174,13 +186,29 @@ export async function handleUpdateCustomKey(
             api_key?: string;
             usage_limit?: number;
             is_active?: number;
+            expires_at?: string | null;
         };
+
+        // Validate expires_at if provided
+        let expiresAt: string | null | undefined = undefined;
+        if (body.expires_at !== undefined) {
+            if (body.expires_at === null || body.expires_at === "") {
+                expiresAt = null;
+            } else {
+                const date = new Date(body.expires_at);
+                if (isNaN(date.getTime())) {
+                    return errorResponse("Invalid expires_at date format", 400);
+                }
+                expiresAt = date.toISOString();
+            }
+        }
 
         const key = await updateCustomKey(db, id, {
             key_name: body.key_name,
             api_key: body.api_key,
             usage_limit: body.usage_limit,
             is_active: body.is_active,
+            expires_at: expiresAt,
         });
 
         return jsonResponse(key);

@@ -12,10 +12,10 @@ import {
     handleDeleteCustomKey,
 } from "./api/keys";
 import { renderAdminUI, renderLoginPage } from "./admin/ui";
-import { handleCors, errorResponse, corsHeaders } from "./utils/helpers";
-
-// Session token storage (in-memory, will reset on worker restart)
-const validSessions = new Set<string>();
+import { handleCors, errorResponse, corsHeaders, jsonResponse } from "./utils/helpers";
+import { createSession, validateSession, deleteSession, cleanExpiredSessions } from "./db/sessions";
+import { getRequestStats, getRecentLogs } from "./db/logs";
+import { checkRateLimit, incrementRateLimit, cleanOldRateLimits } from "./db/ratelimit";
 
 function generateSessionToken(): string {
     const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
@@ -33,9 +33,16 @@ function getSessionFromCookie(request: Request): string | null {
     return match ? match[1] : null;
 }
 
-function isValidSession(request: Request): boolean {
+async function isValidSession(request: Request, db: D1Database): Promise<boolean> {
     const session = getSessionFromCookie(request);
-    return session !== null && validSessions.has(session);
+    if (!session) return false;
+    return validateSession(db, session);
+}
+
+function getClientIP(request: Request): string {
+    return request.headers.get("CF-Connecting-IP") ||
+           request.headers.get("X-Forwarded-For")?.split(",")[0]?.trim() ||
+           "unknown";
 }
 
 export default {
@@ -48,17 +55,95 @@ export default {
         const corsResponse = handleCors(request);
         if (corsResponse) return corsResponse;
 
-        // API Proxy Routes (require custom API key authentication)
+        // Health check endpoint
+        if (path === "/health" && method === "GET") {
+            return jsonResponse({
+                status: "healthy",
+                timestamp: new Date().toISOString(),
+            });
+        }
+
+        // API Proxy Routes (require custom API key authentication + rate limiting)
         if (path === "/v1/models" && method === "GET") {
-            return handleModels();
+            return handleModels(env);
         }
 
         if (path === "/v1/chat/completions" && method === "POST") {
-            return handleChatCompletions(request, env.DB);
+            // Rate limiting
+            const ip = getClientIP(request);
+            const limit = parseInt(env.RATE_LIMIT_REQUESTS) || 60;
+            const windowSeconds = parseInt(env.RATE_LIMIT_WINDOW_SECONDS) || 60;
+
+            const rateLimitResult = await checkRateLimit(env.DB, ip, "ip", limit, windowSeconds);
+            if (!rateLimitResult.allowed) {
+                return new Response(JSON.stringify({
+                    error: "Rate limit exceeded",
+                    retry_after: rateLimitResult.resetAt,
+                }), {
+                    status: 429,
+                    headers: {
+                        ...corsHeaders(),
+                        "Content-Type": "application/json",
+                        "X-RateLimit-Limit": String(limit),
+                        "X-RateLimit-Remaining": "0",
+                        "X-RateLimit-Reset": rateLimitResult.resetAt,
+                    },
+                });
+            }
+
+            await incrementRateLimit(env.DB, ip, "ip", windowSeconds);
+
+            const response = await handleChatCompletions(request, env.DB, env);
+
+            // Add rate limit headers to response
+            const newHeaders = new Headers(response.headers);
+            newHeaders.set("X-RateLimit-Limit", String(limit));
+            newHeaders.set("X-RateLimit-Remaining", String(rateLimitResult.remaining - 1));
+            newHeaders.set("X-RateLimit-Reset", rateLimitResult.resetAt);
+
+            return new Response(response.body, {
+                status: response.status,
+                headers: newHeaders,
+            });
         }
 
         if (path === "/v1/responses" && method === "POST") {
-            return handleResponses(request, env.DB);
+            // Rate limiting
+            const ip = getClientIP(request);
+            const limit = parseInt(env.RATE_LIMIT_REQUESTS) || 60;
+            const windowSeconds = parseInt(env.RATE_LIMIT_WINDOW_SECONDS) || 60;
+
+            const rateLimitResult = await checkRateLimit(env.DB, ip, "ip", limit, windowSeconds);
+            if (!rateLimitResult.allowed) {
+                return new Response(JSON.stringify({
+                    error: "Rate limit exceeded",
+                    retry_after: rateLimitResult.resetAt,
+                }), {
+                    status: 429,
+                    headers: {
+                        ...corsHeaders(),
+                        "Content-Type": "application/json",
+                        "X-RateLimit-Limit": String(limit),
+                        "X-RateLimit-Remaining": "0",
+                        "X-RateLimit-Reset": rateLimitResult.resetAt,
+                    },
+                });
+            }
+
+            await incrementRateLimit(env.DB, ip, "ip", windowSeconds);
+
+            const response = await handleResponses(request, env.DB, env);
+
+            // Add rate limit headers to response
+            const newHeaders = new Headers(response.headers);
+            newHeaders.set("X-RateLimit-Limit", String(limit));
+            newHeaders.set("X-RateLimit-Remaining", String(rateLimitResult.remaining - 1));
+            newHeaders.set("X-RateLimit-Reset", rateLimitResult.resetAt);
+
+            return new Response(response.body, {
+                status: response.status,
+                headers: newHeaders,
+            });
         }
 
         // Admin Login Routes
@@ -74,7 +159,12 @@ export default {
 
             if (password === env.ADMIN_PASSWORD) {
                 const sessionToken = generateSessionToken();
-                validSessions.add(sessionToken);
+                const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000); // 24 hours
+
+                await createSession(env.DB, sessionToken, expiresAt);
+
+                // Clean up expired sessions periodically
+                await cleanExpiredSessions(env.DB);
 
                 return new Response(null, {
                     status: 302,
@@ -94,7 +184,7 @@ export default {
         if (path === "/admin/logout") {
             const session = getSessionFromCookie(request);
             if (session) {
-                validSessions.delete(session);
+                await deleteSession(env.DB, session);
             }
             return new Response(null, {
                 status: 302,
@@ -107,7 +197,7 @@ export default {
 
         // Admin UI Route (requires session authentication)
         if (path === "/admin" || path === "/admin/") {
-            if (!isValidSession(request)) {
+            if (!(await isValidSession(request, env.DB))) {
                 return new Response(null, {
                     status: 302,
                     headers: { "Location": "/admin/login" },
@@ -120,8 +210,40 @@ export default {
 
         // Admin API Routes (require session authentication)
         if (path.startsWith("/admin/api/")) {
-            if (!isValidSession(request)) {
+            if (!(await isValidSession(request, env.DB))) {
                 return errorResponse("Unauthorized", 401);
+            }
+
+            // Stats API
+            if (path === "/admin/api/stats" && method === "GET") {
+                const [todayStats, weekStats, monthStats, recentLogs] = await Promise.all([
+                    getRequestStats(env.DB, "today"),
+                    getRequestStats(env.DB, "week"),
+                    getRequestStats(env.DB, "month"),
+                    getRecentLogs(env.DB, 20),
+                ]);
+
+                return jsonResponse({
+                    today: todayStats,
+                    week: weekStats,
+                    month: monthStats,
+                    recentLogs,
+                });
+            }
+
+            // Cleanup API (for maintenance)
+            if (path === "/admin/api/cleanup" && method === "POST") {
+                const [expiredSessions, oldRateLimits] = await Promise.all([
+                    cleanExpiredSessions(env.DB),
+                    cleanOldRateLimits(env.DB),
+                ]);
+
+                return jsonResponse({
+                    cleaned: {
+                        expiredSessions,
+                        oldRateLimits,
+                    },
+                });
             }
 
             // Vendor Keys API

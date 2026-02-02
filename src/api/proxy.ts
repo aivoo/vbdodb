@@ -12,25 +12,49 @@ import {
     validateCustomKey,
     incrementCustomKeyUsage,
 } from "../db/queries";
+import { logRequest } from "../db/logs";
 import { extractBearerToken, errorResponse, jsonResponse, corsHeaders } from "../utils/helpers";
 
-// -------------------- Configuration --------------------
-const TARGET_MODEL_NAME = "vbdo-007";
+// -------------------- Configuration Interface --------------------
+interface ProxyConfig {
+    modelName: string;
+    manusHost: string;
+    manusLocale: string;
+    manusTz: string;
+    manusTaskMode: string;
+    manusCountryIso: string;
+    wsTimeoutMs: number;
+    wsResponseTimeoutMs: number;
+}
 
-const MANUS_HOST = "api.manus.im";
-const MANUS_WEBSOCKET_URL = `wss://${MANUS_HOST}/socket.io/`;
+// Default configuration (can be overridden by env)
+const DEFAULT_CONFIG: ProxyConfig = {
+    modelName: "vbdo-007",
+    manusHost: "api.manus.im",
+    manusLocale: "zh-CN",
+    manusTz: "Asia/Hong_Kong",
+    manusTaskMode: "discuss",
+    manusCountryIso: "HK",
+    wsTimeoutMs: 15000,
+    wsResponseTimeoutMs: 25000,
+};
 
-const MANUS_BASE_API = `https://${MANUS_HOST}`;
-const MANUS_UPLOAD_PRESIGN = `${MANUS_BASE_API}/api/chat/getPresignedUploadUrl`;
-const MANUS_UPLOAD_COMPLETE = `${MANUS_BASE_API}/api/chat/uploadComplete`;
+function getConfig(env?: Env): ProxyConfig {
+    if (!env) return DEFAULT_CONFIG;
+    return {
+        modelName: env.MODEL_NAME || DEFAULT_CONFIG.modelName,
+        manusHost: env.MANUS_HOST || DEFAULT_CONFIG.manusHost,
+        manusLocale: env.MANUS_LOCALE || DEFAULT_CONFIG.manusLocale,
+        manusTz: env.MANUS_TZ || DEFAULT_CONFIG.manusTz,
+        manusTaskMode: env.MANUS_TASK_MODE || DEFAULT_CONFIG.manusTaskMode,
+        manusCountryIso: env.MANUS_COUNTRY_ISO || DEFAULT_CONFIG.manusCountryIso,
+        wsTimeoutMs: parseInt(env.WS_TIMEOUT_MS) || DEFAULT_CONFIG.wsTimeoutMs,
+        wsResponseTimeoutMs: parseInt(env.WS_RESPONSE_TIMEOUT_MS) || DEFAULT_CONFIG.wsResponseTimeoutMs,
+    };
+}
 
-const MANUS_LOCALE = "zh-CN";
-const MANUS_TZ = "Asia/Hong_Kong";
 const MANUS_CLIENT_TYPE = "web";
 const MANUS_BRANCH = "";
-const MANUS_TASK_MODE = "discuss";
-const MANUS_COUNTRY_ISO = "HK";
-// --------------- end Configuration ----------------------
 
 // -------------------- Random IDs ------------------------
 const _ALNUM = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
@@ -311,7 +335,7 @@ function extractAttachmentsFromResponses(body: ResponsesBody): AttachmentItem[] 
 }
 
 // -------------------- Manus Upload ----------------------
-function manusHeaders(token: string, clientId: string): Record<string, string> {
+function manusHeaders(token: string, clientId: string, config: ProxyConfig): Record<string, string> {
     return {
         accept: "*/*",
         "content-type": "application/json",
@@ -319,8 +343,8 @@ function manusHeaders(token: string, clientId: string): Record<string, string> {
         referer: "https://manus.im/",
         "user-agent": "Mozilla/5.0",
         "x-client-type": MANUS_CLIENT_TYPE,
-        "x-client-locale": MANUS_LOCALE,
-        "x-client-timezone": MANUS_TZ,
+        "x-client-locale": config.manusLocale,
+        "x-client-timezone": config.manusTz,
         "x-client-timezone-offset": "-480",
         "x-client-id": clientId,
         authorization: `Bearer ${token}`,
@@ -331,10 +355,15 @@ async function manusUploadBytes(
     token: string,
     filename: string,
     contentType: string,
-    bytes: Uint8Array
+    bytes: Uint8Array,
+    config: ProxyConfig
 ): Promise<{ fileId: string; fileUrl: string }> {
     const clientId = randId(22);
-    const headers = manusHeaders(token, clientId);
+    const headers = manusHeaders(token, clientId, config);
+
+    const MANUS_BASE_API = `https://${config.manusHost}`;
+    const MANUS_UPLOAD_PRESIGN = `${MANUS_BASE_API}/api/chat/getPresignedUploadUrl`;
+    const MANUS_UPLOAD_COMPLETE = `${MANUS_BASE_API}/api/chat/uploadComplete`;
 
     const tempId = `temp-${randId(22)}`;
     const payload = {
@@ -396,7 +425,7 @@ async function manusUploadBytes(
     return { fileId, fileUrl: j3.data.fileUrl };
 }
 
-async function materializeOpenAIAttachment(token: string, item: AttachmentItem): Promise<ManusAttachment> {
+async function materializeOpenAIAttachment(token: string, item: AttachmentItem, config: ProxyConfig): Promise<ManusAttachment> {
     const kind = item.kind || "image";
     const filename = item.filename || (kind === "image" ? "image.png" : "file.bin");
     let mime = item.mime || guessMimeFromFilename(filename);
@@ -433,7 +462,7 @@ async function materializeOpenAIAttachment(token: string, item: AttachmentItem):
         throw new Error("Unsupported attachment format");
     }
 
-    const up = await manusUploadBytes(token, filename, mime, bytes);
+    const up = await manusUploadBytes(token, filename, mime, bytes, config);
 
     return {
         filename,
@@ -444,19 +473,19 @@ async function materializeOpenAIAttachment(token: string, item: AttachmentItem):
     };
 }
 
-// -------------------- Manus WebSocket -------------------
-function createManusWebSocket(token: string): WebSocket {
+// -------------------- Manus WebSocket with Reconnect -------------------
+function createManusWebSocket(token: string, config: ProxyConfig): WebSocket {
     const url =
-        `${MANUS_WEBSOCKET_URL}?token=${encodeURIComponent(token)}` +
-        `&locale=${encodeURIComponent(MANUS_LOCALE)}` +
-        `&tz=${encodeURIComponent(MANUS_TZ)}` +
+        `wss://${config.manusHost}/socket.io/?token=${encodeURIComponent(token)}` +
+        `&locale=${encodeURIComponent(config.manusLocale)}` +
+        `&tz=${encodeURIComponent(config.manusTz)}` +
         `&clientType=${encodeURIComponent(MANUS_CLIENT_TYPE)}` +
         `&branch=${encodeURIComponent(MANUS_BRANCH)}` +
         `&EIO=4&transport=websocket`;
     return new WebSocket(url);
 }
 
-function sendMessage(ws: WebSocket, content: string, attachments: ManusAttachment[]): void {
+function sendMessage(ws: WebSocket, content: string, attachments: ManusAttachment[], config: ProxyConfig): void {
     const payload = [
         "message",
         {
@@ -468,13 +497,44 @@ function sendMessage(ws: WebSocket, content: string, attachments: ManusAttachmen
             content,
             contents: [],
             messageType: "text",
-            taskMode: MANUS_TASK_MODE,
+            taskMode: config.manusTaskMode,
             attachments: attachments || [],
             extData: { capabilities: { enabledConnectors: [] }, mode: "standard" },
-            countryIsoCode: MANUS_COUNTRY_ISO,
+            countryIsoCode: config.manusCountryIso,
         },
     ];
     ws.send(`42${JSON.stringify(payload)}`);
+}
+
+// WebSocket with retry logic
+async function withWebSocketRetry<T>(
+    token: string,
+    config: ProxyConfig,
+    operation: (ws: WebSocket) => Promise<T>,
+    maxRetries: number = 3
+): Promise<T> {
+    let lastError: Error | null = null;
+
+    for (let attempt = 0; attempt < maxRetries; attempt++) {
+        try {
+            const ws = createManusWebSocket(token, config);
+            return await operation(ws);
+        } catch (e) {
+            lastError = e as Error;
+            const isRetryable = lastError.message.includes("WebSocket") ||
+                               lastError.message.includes("timed out") ||
+                               lastError.message.includes("closed unexpectedly");
+
+            if (!isRetryable || attempt === maxRetries - 1) {
+                throw lastError;
+            }
+
+            // Wait before retry (exponential backoff)
+            await new Promise(resolve => setTimeout(resolve, Math.pow(2, attempt) * 1000));
+        }
+    }
+
+    throw lastError || new Error("WebSocket operation failed");
 }
 
 // Chat Completions streaming (OpenAI chunk)
@@ -485,12 +545,12 @@ function streamManusToOpenAI(
     writer: WritableStreamDefaultWriter<Uint8Array>,
     encoder: TextEncoder,
     chatId: string,
-    modelName: string
+    config: ProxyConfig
 ): Promise<void> {
-    const ws = createManusWebSocket(token);
+    const ws = createManusWebSocket(token, config);
 
     return new Promise((resolve, reject) => {
-        const timeout = setTimeout(() => reject(new Error("WebSocket connection timed out")), 15000);
+        const timeout = setTimeout(() => reject(new Error("WebSocket connection timed out")), config.wsTimeoutMs);
 
         const cleanup = () => {
             clearTimeout(timeout);
@@ -520,7 +580,7 @@ function streamManusToOpenAI(
 
             if (packet.startsWith("40")) {
                 clearTimeout(timeout);
-                sendMessage(ws, content, attachments);
+                sendMessage(ws, content, attachments, config);
                 return;
             }
 
@@ -534,7 +594,7 @@ function streamManusToOpenAI(
                         id: chatId,
                         object: "chat.completion.chunk",
                         created: nowUnixS(),
-                        model: modelName,
+                        model: config.modelName,
                         choices: [{ index: 0, delta: { content: delta.content }, finish_reason: null }],
                     };
                     safeWrite(`data: ${JSON.stringify(chunk)}\n\n`);
@@ -545,7 +605,7 @@ function streamManusToOpenAI(
                         id: chatId,
                         object: "chat.completion.chunk",
                         created: nowUnixS(),
-                        model: modelName,
+                        model: config.modelName,
                         choices: [{ index: 0, delta: {}, finish_reason: "stop" }],
                     };
                     safeWrite(`data: ${JSON.stringify(finalChunk)}\n\n`);
@@ -564,7 +624,7 @@ function streamManusToOpenAI(
 
         const errorHandler = () => {
             cleanup();
-            reject(new Error("WebSocket connection error."));
+            reject(new Error("WebSocket connection error"));
         };
 
         ws.addEventListener("message", messageHandler);
@@ -587,16 +647,17 @@ function streamManusToResponses(
     attachments: ManusAttachment[],
     writer: WritableStreamDefaultWriter<Uint8Array>,
     encoder: TextEncoder,
-    respInfo: RespInfo
+    respInfo: RespInfo,
+    config: ProxyConfig
 ): Promise<void> {
-    const ws = createManusWebSocket(token);
+    const ws = createManusWebSocket(token, config);
 
     const sseEvent = (eventName: string, dataObj: unknown): string => {
         return `event: ${eventName}\n` + `data: ${JSON.stringify(dataObj)}\n\n`;
     };
 
     return new Promise((resolve, reject) => {
-        const timeout = setTimeout(() => reject(new Error("WebSocket connection timed out")), 15000);
+        const timeout = setTimeout(() => reject(new Error("WebSocket connection timed out")), config.wsTimeoutMs);
 
         const cleanup = () => {
             clearTimeout(timeout);
@@ -624,7 +685,7 @@ function streamManusToResponses(
             }
             if (packet.startsWith("40")) {
                 clearTimeout(timeout);
-                sendMessage(ws, content, attachments);
+                sendMessage(ws, content, attachments, config);
                 return;
             }
 
@@ -678,7 +739,7 @@ function streamManusToResponses(
 
         const errorHandler = () => {
             cleanup();
-            reject(new Error("WebSocket connection error."));
+            reject(new Error("WebSocket connection error"));
         };
 
         ws.addEventListener("message", messageHandler);
@@ -687,101 +748,103 @@ function streamManusToResponses(
     });
 }
 
-// Non-stream: collect all deltas then return
-function getFullManusResponse(
+// Non-stream: collect all deltas then return (with retry)
+async function getFullManusResponse(
     token: string,
     content: string,
-    attachments: ManusAttachment[]
+    attachments: ManusAttachment[],
+    config: ProxyConfig
 ): Promise<{ finalAssistantMessage: ManusEvent | undefined; assembledContent: string; fullEventStream: ManusEvent[] }> {
-    const ws = createManusWebSocket(token);
+    return withWebSocketRetry(token, config, (ws) => {
+        return new Promise((resolve, reject) => {
+            let isDone = false;
+            const allEvents: ManusEvent[] = [];
+            const timeout = setTimeout(() => {
+                if (!isDone) {
+                    isDone = true;
+                    try {
+                        ws.close();
+                    } catch (_) {}
+                    reject(new Error("Operation timed out"));
+                }
+            }, config.wsResponseTimeoutMs);
 
-    return new Promise((resolve, reject) => {
-        let isDone = false;
-        const allEvents: ManusEvent[] = [];
-        const timeout = setTimeout(() => {
-            if (!isDone) {
-                isDone = true;
-                try {
-                    ws.close();
-                } catch (_) {}
-                reject(new Error("Operation timed out"));
-            }
-        }, 25000);
+            const cleanup = () => {
+                clearTimeout(timeout);
+                ws.removeEventListener("message", messageHandler);
+                ws.removeEventListener("close", closeHandler);
+                ws.removeEventListener("error", errorHandler);
+            };
 
-        const cleanup = () => {
-            clearTimeout(timeout);
-            ws.removeEventListener("message", messageHandler);
-            ws.removeEventListener("close", closeHandler);
-            ws.removeEventListener("error", errorHandler);
-        };
+            const closeHandler = (evt: CloseEvent) => {
+                if (!isDone) {
+                    isDone = true;
+                    cleanup();
+                    reject(new Error(`WebSocket closed unexpectedly: ${evt.code}`));
+                }
+            };
 
-        const closeHandler = (evt: CloseEvent) => {
-            if (!isDone) {
-                isDone = true;
-                cleanup();
-                reject(new Error(`WebSocket closed unexpectedly: ${evt.code}`));
-            }
-        };
+            const errorHandler = () => {
+                if (!isDone) {
+                    isDone = true;
+                    cleanup();
+                    reject(new Error("WebSocket error"));
+                }
+            };
 
-        const errorHandler = () => {
-            if (!isDone) {
-                isDone = true;
-                cleanup();
-                reject(new Error("WebSocket error"));
-            }
-        };
+            const messageHandler = (event: MessageEvent) => {
+                const packet = event.data as string;
 
-        const messageHandler = (event: MessageEvent) => {
-            const packet = event.data as string;
+                if (packet === "2") {
+                    ws.send("3");
+                    return;
+                }
+                if (packet.startsWith("0")) {
+                    ws.send("40");
+                    return;
+                }
+                if (packet.startsWith("40")) {
+                    sendMessage(ws, content, attachments, config);
+                    return;
+                }
+                if (packet.startsWith("42")) {
+                    const payload = (JSON.parse(packet.substring(2)) as unknown[])?.[1] as ManusEvent | undefined;
+                    if (payload && payload.event) {
+                        allEvents.push(payload);
+                        if (payload.event.type === "statusUpdate" && payload.event.agentStatus === "stopped") {
+                            isDone = true;
+                            cleanup();
+                            ws.close(1000, "Task complete");
 
-            if (packet === "2") {
-                ws.send("3");
-                return;
-            }
-            if (packet.startsWith("0")) {
-                ws.send("40");
-                return;
-            }
-            if (packet.startsWith("40")) {
-                sendMessage(ws, content, attachments);
-                return;
-            }
-            if (packet.startsWith("42")) {
-                const payload = (JSON.parse(packet.substring(2)) as unknown[])?.[1] as ManusEvent | undefined;
-                if (payload && payload.event) {
-                    allEvents.push(payload);
-                    if (payload.event.type === "statusUpdate" && payload.event.agentStatus === "stopped") {
-                        isDone = true;
-                        cleanup();
-                        ws.close(1000, "Task complete");
+                            const finalAssistantMessage = allEvents.find(
+                                (e) => e?.event?.type === "chat" && e?.event?.sender === "assistant"
+                            );
+                            const assembledContent = allEvents
+                                .filter((e) => e?.event?.type === "chatDelta" && e?.event?.delta?.content)
+                                .map((e) => e.event!.delta!.content)
+                                .join("");
 
-                        const finalAssistantMessage = allEvents.find(
-                            (e) => e?.event?.type === "chat" && e?.event?.sender === "assistant"
-                        );
-                        const assembledContent = allEvents
-                            .filter((e) => e?.event?.type === "chatDelta" && e?.event?.delta?.content)
-                            .map((e) => e.event!.delta!.content)
-                            .join("");
-
-                        resolve({ finalAssistantMessage, assembledContent, fullEventStream: allEvents });
+                            resolve({ finalAssistantMessage, assembledContent, fullEventStream: allEvents });
+                        }
                     }
                 }
-            }
-        };
+            };
 
-        ws.addEventListener("message", messageHandler);
-        ws.addEventListener("error", errorHandler);
-        ws.addEventListener("close", closeHandler);
+            ws.addEventListener("message", messageHandler);
+            ws.addEventListener("error", errorHandler);
+            ws.addEventListener("close", closeHandler);
+        });
     });
 }
 
 // -------------------- Handlers --------------------------
-export function handleModels(): Response {
+export function handleModels(env?: Env): Response {
+    const config = getConfig(env);
     return jsonResponse({
         object: "list",
         data: [
             {
-                id: TARGET_MODEL_NAME,
+                id: config.modelName,
                 object: "model",
                 created: 0,
                 owned_by: "proxy",
@@ -790,36 +853,104 @@ export function handleModels(): Response {
     });
 }
 
-export async function handleChatCompletions(request: Request, db: D1Database): Promise<Response> {
+export async function handleChatCompletions(request: Request, db: D1Database, env?: Env): Promise<Response> {
+    const startTime = Date.now();
+    const config = getConfig(env);
+    const ip = request.headers.get("CF-Connecting-IP") || request.headers.get("X-Forwarded-For") || null;
+    const userAgent = request.headers.get("User-Agent") || null;
+
     // Extract and validate custom API key
     const customApiKey = extractBearerToken(request);
     if (!customApiKey) {
+        await logRequest(db, {
+            endpoint: "/v1/chat/completions",
+            method: "POST",
+            statusCode: 401,
+            responseTimeMs: Date.now() - startTime,
+            ip,
+            userAgent,
+            error: "Missing Authorization header",
+        });
         return errorResponse("Missing Authorization header", 401);
     }
 
     const validation = await validateCustomKey(db, customApiKey);
     if (!validation.valid || !validation.key) {
+        await logRequest(db, {
+            endpoint: "/v1/chat/completions",
+            method: "POST",
+            statusCode: 401,
+            responseTimeMs: Date.now() - startTime,
+            ip,
+            userAgent,
+            error: validation.error || "Invalid API key",
+        });
         return errorResponse(validation.error || "Invalid API key", 401);
     }
 
-    // Select a random available vendor key
+    // Select the least used available vendor key
     const vendorKey = await selectRandomAvailableVendorKey(db);
     if (!vendorKey) {
+        await logRequest(db, {
+            customKeyId: validation.key.id,
+            endpoint: "/v1/chat/completions",
+            method: "POST",
+            statusCode: 503,
+            responseTimeMs: Date.now() - startTime,
+            ip,
+            userAgent,
+            error: "No available vendor keys",
+        });
         return errorResponse("No available vendor keys", 503);
     }
 
     const token = vendorKey.api_key;
 
     const body = (await request.json().catch(() => null)) as ChatCompletionsBody | null;
-    if (!body) return errorResponse("Invalid JSON body.", 400);
+    if (!body) {
+        await logRequest(db, {
+            customKeyId: validation.key.id,
+            vendorKeyId: vendorKey.id,
+            endpoint: "/v1/chat/completions",
+            method: "POST",
+            statusCode: 400,
+            responseTimeMs: Date.now() - startTime,
+            ip,
+            userAgent,
+            error: "Invalid JSON body",
+        });
+        return errorResponse("Invalid JSON body.", 400);
+    }
 
-    const model = body.model || TARGET_MODEL_NAME;
-    if (model !== TARGET_MODEL_NAME) {
-        return errorResponse(`Model not supported. This endpoint only supports '${TARGET_MODEL_NAME}'.`, 400);
+    const model = body.model || config.modelName;
+    if (model !== config.modelName) {
+        await logRequest(db, {
+            customKeyId: validation.key.id,
+            vendorKeyId: vendorKey.id,
+            endpoint: "/v1/chat/completions",
+            method: "POST",
+            statusCode: 400,
+            responseTimeMs: Date.now() - startTime,
+            ip,
+            userAgent,
+            error: `Model not supported: ${model}`,
+        });
+        return errorResponse(`Model not supported. This endpoint only supports '${config.modelName}'.`, 400);
     }
 
     const messages = body.messages || [];
     if (!Array.isArray(messages) || messages.length === 0) {
+        await logRequest(db, {
+            customKeyId: validation.key.id,
+            vendorKeyId: vendorKey.id,
+            endpoint: "/v1/chat/completions",
+            method: "POST",
+            statusCode: 400,
+            responseTimeMs: Date.now() - startTime,
+            ip,
+            userAgent,
+            error: "Messages array is required",
+        });
         return errorResponse("The 'messages' array is required.", 400);
     }
 
@@ -829,7 +960,7 @@ export async function handleChatCompletions(request: Request, db: D1Database): P
     const rawItems = extractAttachmentsFromChat(messages);
     const attachments: ManusAttachment[] = [];
     for (const it of rawItems) {
-        attachments.push(await materializeOpenAIAttachment(token, it));
+        attachments.push(await materializeOpenAIAttachment(token, it, config));
     }
 
     // 2) prompt + attachment notes
@@ -847,90 +978,198 @@ export async function handleChatCompletions(request: Request, db: D1Database): P
         incrementCustomKeyUsage(db, validation.key.id),
     ]);
 
+    // Capture key IDs for use in async closures
+    const customKeyId = validation.key.id;
+
     // 3) Return response
-    if (!stream) {
-        const manusResult = await getFullManusResponse(token, prompt, attachments);
-        const responseContent =
-            manusResult.assembledContent || manusResult.finalAssistantMessage?.event?.content || "";
+    try {
+        if (!stream) {
+            const manusResult = await getFullManusResponse(token, prompt, attachments, config);
+            const responseContent =
+                manusResult.assembledContent || manusResult.finalAssistantMessage?.event?.content || "";
 
-        const chatId = `chatcmpl-${randId(29)}`;
-        const openAIResponse = {
-            id: chatId,
-            object: "chat.completion",
-            created: nowUnixS(),
-            model: TARGET_MODEL_NAME,
-            choices: [
-                {
-                    index: 0,
-                    message: { role: "assistant", content: responseContent },
-                    finish_reason: "stop",
-                },
-            ],
-            usage: null,
-        };
+            const chatId = `chatcmpl-${randId(29)}`;
+            const openAIResponse = {
+                id: chatId,
+                object: "chat.completion",
+                created: nowUnixS(),
+                model: config.modelName,
+                choices: [
+                    {
+                        index: 0,
+                        message: { role: "assistant", content: responseContent },
+                        finish_reason: "stop",
+                    },
+                ],
+                usage: null,
+            };
 
-        return jsonResponse(openAIResponse);
-    }
+            await logRequest(db, {
+                customKeyId,
+                vendorKeyId: vendorKey.id,
+                endpoint: "/v1/chat/completions",
+                method: "POST",
+                statusCode: 200,
+                responseTimeMs: Date.now() - startTime,
+                ip,
+                userAgent,
+            });
 
-    // stream = true
-    const { readable, writable } = new TransformStream<Uint8Array>();
-    const writer = writable.getWriter();
-    const encoder = new TextEncoder();
-    const chatId = `chatcmpl-${randId(29)}`;
-
-    (async () => {
-        try {
-            await streamManusToOpenAI(token, prompt, attachments, writer, encoder, chatId, TARGET_MODEL_NAME);
-        } catch (e) {
-            const err = e as Error;
-            const errJson = JSON.stringify({ error: { message: err.message, type: "internal_server_error" } });
-            try {
-                writer.write(encoder.encode(`data: ${errJson}\n\n`));
-                writer.write(encoder.encode("data: [DONE]\n\n"));
-            } catch (_) {}
-        } finally {
-            try {
-                await writer.close();
-            } catch (_) {}
+            return jsonResponse(openAIResponse);
         }
-    })();
 
-    return new Response(readable, {
-        headers: {
-            ...corsHeaders(),
-            "Content-Type": "text/event-stream; charset=utf-8",
-            "Cache-Control": "no-cache",
-            Connection: "keep-alive",
-        },
-    });
+        // stream = true
+        const { readable, writable } = new TransformStream<Uint8Array>();
+        const writer = writable.getWriter();
+        const encoder = new TextEncoder();
+        const chatId = `chatcmpl-${randId(29)}`;
+
+        (async () => {
+            try {
+                await streamManusToOpenAI(token, prompt, attachments, writer, encoder, chatId, config);
+                await logRequest(db, {
+                    customKeyId,
+                    vendorKeyId: vendorKey.id,
+                    endpoint: "/v1/chat/completions",
+                    method: "POST",
+                    statusCode: 200,
+                    responseTimeMs: Date.now() - startTime,
+                    ip,
+                    userAgent,
+                });
+            } catch (e) {
+                const err = e as Error;
+                const errJson = JSON.stringify({ error: { message: err.message, type: "internal_server_error" } });
+                try {
+                    writer.write(encoder.encode(`data: ${errJson}\n\n`));
+                    writer.write(encoder.encode("data: [DONE]\n\n"));
+                } catch (_) {}
+                await logRequest(db, {
+                    customKeyId,
+                    vendorKeyId: vendorKey.id,
+                    endpoint: "/v1/chat/completions",
+                    method: "POST",
+                    statusCode: 500,
+                    responseTimeMs: Date.now() - startTime,
+                    ip,
+                    userAgent,
+                    error: err.message,
+                });
+            } finally {
+                try {
+                    await writer.close();
+                } catch (_) {}
+            }
+        })();
+
+        return new Response(readable, {
+            headers: {
+                ...corsHeaders(),
+                "Content-Type": "text/event-stream; charset=utf-8",
+                "Cache-Control": "no-cache",
+                Connection: "keep-alive",
+            },
+        });
+    } catch (e) {
+        const err = e as Error;
+        await logRequest(db, {
+            customKeyId,
+            vendorKeyId: vendorKey.id,
+            endpoint: "/v1/chat/completions",
+            method: "POST",
+            statusCode: 500,
+            responseTimeMs: Date.now() - startTime,
+            ip,
+            userAgent,
+            error: err.message,
+        });
+        return errorResponse(`Request failed: ${err.message}`, 500);
+    }
 }
 
-export async function handleResponses(request: Request, db: D1Database): Promise<Response> {
+export async function handleResponses(request: Request, db: D1Database, env?: Env): Promise<Response> {
+    const startTime = Date.now();
+    const config = getConfig(env);
+    const ip = request.headers.get("CF-Connecting-IP") || request.headers.get("X-Forwarded-For") || null;
+    const userAgent = request.headers.get("User-Agent") || null;
+
     // Extract and validate custom API key
     const customApiKey = extractBearerToken(request);
     if (!customApiKey) {
+        await logRequest(db, {
+            endpoint: "/v1/responses",
+            method: "POST",
+            statusCode: 401,
+            responseTimeMs: Date.now() - startTime,
+            ip,
+            userAgent,
+            error: "Missing Authorization header",
+        });
         return errorResponse("Missing Authorization header", 401);
     }
 
     const validation = await validateCustomKey(db, customApiKey);
     if (!validation.valid || !validation.key) {
+        await logRequest(db, {
+            endpoint: "/v1/responses",
+            method: "POST",
+            statusCode: 401,
+            responseTimeMs: Date.now() - startTime,
+            ip,
+            userAgent,
+            error: validation.error || "Invalid API key",
+        });
         return errorResponse(validation.error || "Invalid API key", 401);
     }
 
-    // Select a random available vendor key
+    // Select the least used available vendor key
     const vendorKey = await selectRandomAvailableVendorKey(db);
     if (!vendorKey) {
+        await logRequest(db, {
+            customKeyId: validation.key.id,
+            endpoint: "/v1/responses",
+            method: "POST",
+            statusCode: 503,
+            responseTimeMs: Date.now() - startTime,
+            ip,
+            userAgent,
+            error: "No available vendor keys",
+        });
         return errorResponse("No available vendor keys", 503);
     }
 
     const token = vendorKey.api_key;
 
     const body = (await request.json().catch(() => null)) as ResponsesBody | null;
-    if (!body) return errorResponse("Invalid JSON body.", 400);
+    if (!body) {
+        await logRequest(db, {
+            customKeyId: validation.key.id,
+            vendorKeyId: vendorKey.id,
+            endpoint: "/v1/responses",
+            method: "POST",
+            statusCode: 400,
+            responseTimeMs: Date.now() - startTime,
+            ip,
+            userAgent,
+            error: "Invalid JSON body",
+        });
+        return errorResponse("Invalid JSON body.", 400);
+    }
 
-    const model = body.model || TARGET_MODEL_NAME;
-    if (model !== TARGET_MODEL_NAME) {
-        return errorResponse(`Model not supported. This endpoint only supports '${TARGET_MODEL_NAME}'.`, 400);
+    const model = body.model || config.modelName;
+    if (model !== config.modelName) {
+        await logRequest(db, {
+            customKeyId: validation.key.id,
+            vendorKeyId: vendorKey.id,
+            endpoint: "/v1/responses",
+            method: "POST",
+            statusCode: 400,
+            responseTimeMs: Date.now() - startTime,
+            ip,
+            userAgent,
+            error: `Model not supported: ${model}`,
+        });
+        return errorResponse(`Model not supported. This endpoint only supports '${config.modelName}'.`, 400);
     }
 
     const stream = !!body.stream;
@@ -939,7 +1178,7 @@ export async function handleResponses(request: Request, db: D1Database): Promise
     const rawItems = extractAttachmentsFromResponses(body);
     const attachments: ManusAttachment[] = [];
     for (const it of rawItems) {
-        attachments.push(await materializeOpenAIAttachment(token, it));
+        attachments.push(await materializeOpenAIAttachment(token, it, config));
     }
 
     // 2) prompt + attachment notes
@@ -956,6 +1195,9 @@ export async function handleResponses(request: Request, db: D1Database): Promise
         incrementVendorKeyUsage(db, vendorKey.id),
         incrementCustomKeyUsage(db, validation.key.id),
     ]);
+
+    // Capture key IDs for use in async closures
+    const customKeyId = validation.key.id;
 
     // 3) Build response object
     const respId = `resp_${cryptoRandomHex(16)}`;
@@ -1013,63 +1255,112 @@ export async function handleResponses(request: Request, db: D1Database): Promise
         };
     }
 
-    if (!stream) {
-        const manusResult = await getFullManusResponse(token, prompt, attachments);
-        const text = manusResult.assembledContent || manusResult.finalAssistantMessage?.event?.content || "";
-        return jsonResponse(makeResponseObj("completed", text));
-    }
+    try {
+        if (!stream) {
+            const manusResult = await getFullManusResponse(token, prompt, attachments, config);
+            const text = manusResult.assembledContent || manusResult.finalAssistantMessage?.event?.content || "";
 
-    // stream = true
-    const { readable, writable } = new TransformStream<Uint8Array>();
-    const writer = writable.getWriter();
-    const encoder = new TextEncoder();
+            await logRequest(db, {
+                customKeyId,
+                vendorKeyId: vendorKey.id,
+                endpoint: "/v1/responses",
+                method: "POST",
+                statusCode: 200,
+                responseTimeMs: Date.now() - startTime,
+                ip,
+                userAgent,
+            });
 
-    const respInfo: RespInfo = {
-        seq: 1,
-        acc: "",
-        msgId,
-        makeResponseObj,
-    };
-
-    // Write response.created first
-    const createdEvent =
-        `event: response.created\n` +
-        `data: ${JSON.stringify({
-            type: "response.created",
-            response: makeResponseObj("in_progress", null),
-            sequence_number: respInfo.seq++,
-        })}\n\n`;
-
-    writer.write(encoder.encode(createdEvent));
-
-    (async () => {
-        try {
-            await streamManusToResponses(token, prompt, attachments, writer, encoder, respInfo);
-        } catch (e) {
-            const err = e as Error;
-            const errEvent =
-                `event: response.error\n` +
-                `data: ${JSON.stringify({
-                    type: "response.error",
-                    error: { message: err.message, type: "internal_server_error" },
-                    sequence_number: respInfo.seq++,
-                })}\n\n`;
-            try {
-                writer.write(encoder.encode(errEvent));
-            } catch (_) {}
-        } finally {
-            try {
-                await writer.close();
-            } catch (_) {}
+            return jsonResponse(makeResponseObj("completed", text));
         }
-    })();
 
-    return new Response(readable, {
-        headers: {
-            ...corsHeaders(),
-            "Content-Type": "text/event-stream; charset=utf-8",
-            "Cache-Control": "no-cache",
-            Connection: "keep-alive",
-        },
-    });
+        // stream = true
+        const { readable, writable } = new TransformStream<Uint8Array>();
+        const writer = writable.getWriter();
+        const encoder = new TextEncoder();
+
+        const respInfo: RespInfo = {
+            seq: 1,
+            acc: "",
+            msgId,
+            makeResponseObj,
+        };
+
+        // Write response.created first
+        const createdEvent =
+            `event: response.created\n` +
+            `data: ${JSON.stringify({
+                type: "response.created",
+                response: makeResponseObj("in_progress", null),
+                sequence_number: respInfo.seq++,
+            })}\n\n`;
+
+        writer.write(encoder.encode(createdEvent));
+
+        (async () => {
+            try {
+                await streamManusToResponses(token, prompt, attachments, writer, encoder, respInfo, config);
+                await logRequest(db, {
+                    customKeyId,
+                    vendorKeyId: vendorKey.id,
+                    endpoint: "/v1/responses",
+                    method: "POST",
+                    statusCode: 200,
+                    responseTimeMs: Date.now() - startTime,
+                    ip,
+                    userAgent,
+                });
+            } catch (e) {
+                const err = e as Error;
+                const errEvent =
+                    `event: response.error\n` +
+                    `data: ${JSON.stringify({
+                        type: "response.error",
+                        error: { message: err.message, type: "internal_server_error" },
+                        sequence_number: respInfo.seq++,
+                    })}\n\n`;
+                try {
+                    writer.write(encoder.encode(errEvent));
+                } catch (_) {}
+                await logRequest(db, {
+                    customKeyId,
+                    vendorKeyId: vendorKey.id,
+                    endpoint: "/v1/responses",
+                    method: "POST",
+                    statusCode: 500,
+                    responseTimeMs: Date.now() - startTime,
+                    ip,
+                    userAgent,
+                    error: err.message,
+                });
+            } finally {
+                try {
+                    await writer.close();
+                } catch (_) {}
+            }
+        })();
+
+        return new Response(readable, {
+            headers: {
+                ...corsHeaders(),
+                "Content-Type": "text/event-stream; charset=utf-8",
+                "Cache-Control": "no-cache",
+                Connection: "keep-alive",
+            },
+        });
+    } catch (e) {
+        const err = e as Error;
+        await logRequest(db, {
+            customKeyId: validation.key.id,
+            vendorKeyId: vendorKey.id,
+            endpoint: "/v1/responses",
+            method: "POST",
+            statusCode: 500,
+            responseTimeMs: Date.now() - startTime,
+            ip,
+            userAgent,
+            error: err.message,
+        });
+        return errorResponse(`Request failed: ${err.message}`, 500);
+    }
 }

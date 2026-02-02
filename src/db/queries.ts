@@ -26,8 +26,13 @@ export interface CustomKey {
     usage_limit: number;
     used_count: number;
     is_active: number;
+    expires_at: string | null;
     created_at: string;
     updated_at: string;
+}
+
+export interface CustomKeyWithExpiration extends CustomKey {
+    is_expired: boolean;
 }
 
 // Vendor Keys Queries
@@ -123,12 +128,12 @@ export async function selectRandomAvailableVendorKey(db: D1Database): Promise<Ve
         WHERE last_reset_date IS NULL OR last_reset_date < ?
     `).bind(today, today).run();
 
-    // Then select a random available key (not expired, not exhausted)
+    // Then select the least used available key (not expired, not exhausted)
     const { results } = await db.prepare(`
         SELECT * FROM vendor_keys
         WHERE is_active = 1
         AND used_count < usage_limit
-        ORDER BY RANDOM()
+        ORDER BY used_count ASC, RANDOM()
     `).all<VendorKey>();
 
     // Filter out expired JWT keys
@@ -137,6 +142,9 @@ export async function selectRandomAvailableVendorKey(db: D1Database): Promise<Ve
     return validKeys.length > 0 ? validKeys[0] : null;
 }
 
+// Alias for backwards compatibility - now selects least used key
+export const selectLeastUsedAvailableVendorKey = selectRandomAvailableVendorKey;
+
 export async function incrementVendorKeyUsage(db: D1Database, id: number): Promise<void> {
     await db.prepare(
         "UPDATE vendor_keys SET used_count = used_count + 1, updated_at = CURRENT_TIMESTAMP WHERE id = ?"
@@ -144,11 +152,19 @@ export async function incrementVendorKeyUsage(db: D1Database, id: number): Promi
 }
 
 // Custom Keys Queries
-export async function getCustomKeys(db: D1Database): Promise<CustomKey[]> {
+export async function getCustomKeys(db: D1Database): Promise<CustomKeyWithExpiration[]> {
     const { results } = await db.prepare(
         "SELECT * FROM custom_keys ORDER BY created_at DESC"
     ).all<CustomKey>();
-    return results || [];
+
+    // Add expiration check
+    return (results || []).map(key => {
+        const isExpired = key.expires_at ? new Date(key.expires_at).getTime() < Date.now() : false;
+        return {
+            ...key,
+            is_expired: isExpired,
+        };
+    });
 }
 
 export async function getCustomKeyById(db: D1Database, id: number): Promise<CustomKey | null> {
@@ -169,11 +185,12 @@ export async function createCustomKey(
     db: D1Database,
     keyName: string,
     apiKey: string,
-    usageLimit: number = -1
+    usageLimit: number = -1,
+    expiresAt: string | null = null
 ): Promise<CustomKey | null> {
     await db.prepare(
-        "INSERT INTO custom_keys (key_name, api_key, usage_limit) VALUES (?, ?, ?)"
-    ).bind(keyName, apiKey, usageLimit).run();
+        "INSERT INTO custom_keys (key_name, api_key, usage_limit, expires_at) VALUES (?, ?, ?, ?)"
+    ).bind(keyName, apiKey, usageLimit, expiresAt).run();
 
     return db.prepare(
         "SELECT * FROM custom_keys WHERE api_key = ?"
@@ -183,10 +200,10 @@ export async function createCustomKey(
 export async function updateCustomKey(
     db: D1Database,
     id: number,
-    updates: Partial<Pick<CustomKey, "key_name" | "api_key" | "usage_limit" | "is_active">>
+    updates: Partial<Pick<CustomKey, "key_name" | "api_key" | "usage_limit" | "is_active" | "expires_at">>
 ): Promise<CustomKey | null> {
     const setClauses: string[] = [];
-    const values: (string | number)[] = [];
+    const values: (string | number | null)[] = [];
 
     if (updates.key_name !== undefined) {
         setClauses.push("key_name = ?");
@@ -203,6 +220,10 @@ export async function updateCustomKey(
     if (updates.is_active !== undefined) {
         setClauses.push("is_active = ?");
         values.push(updates.is_active);
+    }
+    if (updates.expires_at !== undefined) {
+        setClauses.push("expires_at = ?");
+        values.push(updates.expires_at);
     }
 
     if (setClauses.length === 0) return getCustomKeyById(db, id);
@@ -233,6 +254,11 @@ export async function validateCustomKey(db: D1Database, apiKey: string): Promise
 
     if (key.is_active !== 1) {
         return { valid: false, error: "API key is disabled" };
+    }
+
+    // Check if key has expired
+    if (key.expires_at && new Date(key.expires_at).getTime() < Date.now()) {
+        return { valid: false, error: "API key has expired" };
     }
 
     if (key.usage_limit !== -1 && key.used_count >= key.usage_limit) {

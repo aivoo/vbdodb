@@ -8,6 +8,16 @@ declare namespace Cloudflare {
 	interface Env {
 		DB: D1Database;
 		ADMIN_PASSWORD: string;
+		MANUS_HOST: string;
+		MANUS_LOCALE: string;
+		MANUS_TZ: string;
+		MANUS_TASK_MODE: string;
+		MANUS_COUNTRY_ISO: string;
+		MODEL_NAME: string;
+		RATE_LIMIT_REQUESTS: string;
+		RATE_LIMIT_WINDOW_SECONDS: string;
+		WS_TIMEOUT_MS: string;
+		WS_RESPONSE_TIMEOUT_MS: string;
 	}
 }
 interface Env extends Cloudflare.Env {}
