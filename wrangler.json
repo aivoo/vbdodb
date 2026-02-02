@@ -1,0 +1,16 @@
+{
+	"compatibility_date": "2025-10-08",
+	"main": "src/index.ts",
+	"name": "vbdodb",
+	"upload_source_maps": true,
+	"d1_databases": [
+		{
+			"binding": "DB",
+			"database_id": "86db5e92-09fd-435c-8830-88f38845d1de",
+			"database_name": "vbdo_freekey"
+		}
+	],
+	"observability": {
+		"enabled": true
+	}
+}
