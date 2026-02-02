@@ -1,5 +1,7 @@
 // Database query helpers for key management
 
+import { getTodayDate, getJwtExpiration, isJwtExpired } from "../utils/helpers";
+
 export interface VendorKey {
     id: number;
     vendor_name: string;
@@ -7,8 +9,14 @@ export interface VendorKey {
     usage_limit: number;
     used_count: number;
     is_active: number;
+    last_reset_date: string | null;
     created_at: string;
     updated_at: string;
+}
+
+export interface VendorKeyWithExpiration extends VendorKey {
+    expires_at: string | null;
+    is_expired: boolean;
 }
 
 export interface CustomKey {
@@ -23,11 +31,20 @@ export interface CustomKey {
 }
 
 // Vendor Keys Queries
-export async function getVendorKeys(db: D1Database): Promise<VendorKey[]> {
+export async function getVendorKeys(db: D1Database): Promise<VendorKeyWithExpiration[]> {
     const { results } = await db.prepare(
         "SELECT * FROM vendor_keys ORDER BY created_at DESC"
     ).all<VendorKey>();
-    return results || [];
+
+    // Add expiration info from JWT
+    return (results || []).map(key => {
+        const expiresAt = getJwtExpiration(key.api_key);
+        return {
+            ...key,
+            expires_at: expiresAt ? expiresAt.toISOString() : null,
+            is_expired: isJwtExpired(key.api_key),
+        };
+    });
 }
 
 export async function getVendorKeyById(db: D1Database, id: number): Promise<VendorKey | null> {
@@ -97,14 +114,27 @@ export async function deleteVendorKey(db: D1Database, id: number): Promise<boole
 }
 
 export async function selectRandomAvailableVendorKey(db: D1Database): Promise<VendorKey | null> {
-    const result = await db.prepare(`
+    const today = getTodayDate();
+
+    // First, reset usage count for keys that haven't been reset today
+    await db.prepare(`
+        UPDATE vendor_keys
+        SET used_count = 0, last_reset_date = ?, updated_at = CURRENT_TIMESTAMP
+        WHERE last_reset_date IS NULL OR last_reset_date < ?
+    `).bind(today, today).run();
+
+    // Then select a random available key (not expired, not exhausted)
+    const { results } = await db.prepare(`
         SELECT * FROM vendor_keys
         WHERE is_active = 1
         AND used_count < usage_limit
         ORDER BY RANDOM()
-        LIMIT 1
-    `).first<VendorKey>();
-    return result || null;
+    `).all<VendorKey>();
+
+    // Filter out expired JWT keys
+    const validKeys = (results || []).filter(key => !isJwtExpired(key.api_key));
+
+    return validKeys.length > 0 ? validKeys[0] : null;
 }
 
 export async function incrementVendorKeyUsage(db: D1Database, id: number): Promise<void> {

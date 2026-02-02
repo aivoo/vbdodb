@@ -117,6 +117,26 @@ export function renderAdminUI(): string {
             color: #ff4757;
             font-weight: 600;
         }
+        .status-expired {
+            color: #ff4757;
+            font-weight: 600;
+        }
+        .expiry-date {
+            font-size: 0.85rem;
+        }
+        .expiry-valid {
+            color: #2ed573;
+        }
+        .expiry-warning {
+            color: #ffa502;
+        }
+        .expiry-expired {
+            color: #ff4757;
+        }
+        .reset-info {
+            font-size: 0.75rem;
+            color: #999;
+        }
         .modal {
             display: none;
             position: fixed;
@@ -248,7 +268,8 @@ export function renderAdminUI(): string {
                         <th>ID</th>
                         <th>Vendor Name</th>
                         <th>API Key</th>
-                        <th>Usage</th>
+                        <th>Today Usage</th>
+                        <th>Expires</th>
                         <th>Status</th>
                         <th>Actions</th>
                     </tr>
@@ -391,7 +412,35 @@ export function renderAdminUI(): string {
             const response = await fetch(API_BASE + '/vendor-keys');
             const keys = await response.json();
             const tbody = document.getElementById('vendor-keys-table');
-            tbody.innerHTML = keys.map(key => \`
+            tbody.innerHTML = keys.map(key => {
+                // Format expiration date
+                let expiryDisplay = '<span class="expiry-date">N/A</span>';
+                if (key.expires_at) {
+                    const expiryDate = new Date(key.expires_at);
+                    const now = new Date();
+                    const daysUntilExpiry = Math.ceil((expiryDate - now) / (1000 * 60 * 60 * 24));
+                    const dateStr = expiryDate.toLocaleDateString();
+
+                    if (key.is_expired) {
+                        expiryDisplay = \`<span class="expiry-date expiry-expired">Expired</span>\`;
+                    } else if (daysUntilExpiry <= 3) {
+                        expiryDisplay = \`<span class="expiry-date expiry-warning">\${dateStr} (\${daysUntilExpiry}d)</span>\`;
+                    } else {
+                        expiryDisplay = \`<span class="expiry-date expiry-valid">\${dateStr}</span>\`;
+                    }
+                }
+
+                // Determine status
+                let statusDisplay;
+                if (key.is_expired) {
+                    statusDisplay = '<span class="status-expired">Expired</span>';
+                } else if (key.is_active) {
+                    statusDisplay = '<span class="status-active">Active</span>';
+                } else {
+                    statusDisplay = '<span class="status-inactive">Inactive</span>';
+                }
+
+                return \`
                 <tr>
                     <td>\${key.id}</td>
                     <td>\${key.vendor_name}</td>
@@ -401,15 +450,17 @@ export function renderAdminUI(): string {
                             <div class="usage-fill" style="width: \${Math.min(100, (key.used_count / key.usage_limit) * 100)}%"></div>
                         </div>
                         <div class="usage-text">\${key.used_count} / \${key.usage_limit}</div>
+                        <div class="reset-info">Resets daily</div>
                     </td>
-                    <td><span class="\${key.is_active ? 'status-active' : 'status-inactive'}">\${key.is_active ? 'Active' : 'Inactive'}</span></td>
+                    <td>\${expiryDisplay}</td>
+                    <td>\${statusDisplay}</td>
                     <td class="actions">
                         <button class="btn btn-sm btn-primary" onclick="editVendorKey(\${key.id})">Edit</button>
                         <button class="btn btn-sm \${key.is_active ? 'btn-danger' : 'btn-primary'}" onclick="toggleVendorKey(\${key.id}, \${key.is_active})">\${key.is_active ? 'Disable' : 'Enable'}</button>
                         <button class="btn btn-sm btn-danger" onclick="deleteVendorKey(\${key.id})">Delete</button>
                     </td>
                 </tr>
-            \`).join('');
+            \`}).join('');
         }
 
         function showAddVendorModal() {
