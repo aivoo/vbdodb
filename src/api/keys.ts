@@ -136,7 +136,7 @@ export async function handleCreateCustomKey(
         }
 
         // Generate API key if not provided
-        const apiKey = body.api_key || generateApiKey("ck");
+        const apiKey = body.api_key || generateApiKey("vbdo");
 
         // Validate expires_at if provided
         let expiresAt: string | null = null;
