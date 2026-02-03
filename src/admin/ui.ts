@@ -6,7 +6,7 @@ export function renderAdminUI(): string {
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>API Key Management</title>
+    <title>API密钥管理</title>
     <style>
         * {
             margin: 0;
@@ -348,17 +348,73 @@ export function renderAdminUI(): string {
             color: #999;
             font-size: 0.75rem;
         }
+        .log-prompt {
+            max-width: 300px;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+            font-size: 0.75rem;
+            color: #666;
+        }
+        /* Ranking styles */
+        .ranking-controls {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 16px;
+        }
+        .ranking-controls select {
+            padding: 8px 12px;
+            border: 2px solid #eee;
+            border-radius: 8px;
+            font-size: 0.9rem;
+        }
+        .ranking-number {
+            font-weight: 700;
+            color: #667eea;
+        }
+        .ranking-number.gold { color: #ffc107; }
+        .ranking-number.silver { color: #adb5bd; }
+        .ranking-number.bronze { color: #cd7f32; }
+        /* Pagination */
+        .pagination {
+            display: flex;
+            justify-content: center;
+            gap: 8px;
+            margin-top: 16px;
+        }
+        .pagination button {
+            padding: 8px 16px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            background: white;
+            cursor: pointer;
+        }
+        .pagination button:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+        .pagination button.active {
+            background: #667eea;
+            color: white;
+            border-color: #667eea;
+        }
+        .pagination-info {
+            padding: 8px;
+            color: #666;
+            font-size: 0.9rem;
+        }
     </style>
 </head>
 <body>
     <div class="container">
-        <h1>API Key Management</h1>
+        <h1>API密钥管理</h1>
 
         <div class="tabs">
-            <button class="tab active" data-tab="stats">Dashboard</button>
-            <button class="tab" data-tab="vendor">Vendor Keys</button>
-            <button class="tab" data-tab="custom">Custom Keys</button>
-            <button class="tab" data-tab="logs">Request Logs</button>
+            <button class="tab active" data-tab="stats">仪表盘</button>
+            <button class="tab" data-tab="vendor">供应商密钥</button>
+            <button class="tab" data-tab="custom">自定义密钥</button>
+            <button class="tab" data-tab="logs">请求日志</button>
+            <button class="tab" data-tab="ranking">排行榜</button>
         </div>
 
         <div id="alert-container"></div>
@@ -366,55 +422,55 @@ export function renderAdminUI(): string {
         <!-- Stats Dashboard Tab -->
         <div id="stats-tab" class="card">
             <div class="card-header">
-                <h2 class="card-title">Statistics Dashboard</h2>
-                <button class="btn btn-primary btn-sm" onclick="loadStats()">Refresh</button>
+                <h2 class="card-title">统计仪表盘</h2>
+                <button class="btn btn-primary btn-sm" onclick="loadStats()">刷新</button>
             </div>
             <div class="stats-grid">
                 <div class="stat-card">
-                    <div class="stat-label">Today</div>
+                    <div class="stat-label">今日</div>
                     <div class="stat-value" id="stat-today">-</div>
-                    <div class="stat-sub" id="stat-today-sub">requests</div>
+                    <div class="stat-sub" id="stat-today-sub">次请求</div>
                 </div>
                 <div class="stat-card success">
-                    <div class="stat-label">This Week</div>
+                    <div class="stat-label">本周</div>
                     <div class="stat-value" id="stat-week">-</div>
-                    <div class="stat-sub" id="stat-week-sub">requests</div>
+                    <div class="stat-sub" id="stat-week-sub">次请求</div>
                 </div>
                 <div class="stat-card warning">
-                    <div class="stat-label">This Month</div>
+                    <div class="stat-label">本月</div>
                     <div class="stat-value" id="stat-month">-</div>
-                    <div class="stat-sub" id="stat-month-sub">requests</div>
+                    <div class="stat-sub" id="stat-month-sub">次请求</div>
                 </div>
             </div>
             <div class="chart-container">
-                <div class="chart-title">Request Overview</div>
+                <div class="chart-title">请求概览</div>
                 <div class="chart-bars" id="stats-chart">
                     <div class="chart-bar-wrapper">
                         <div class="chart-bar" style="height: 0px;"></div>
                         <div class="chart-bar-value">0</div>
-                        <div class="chart-bar-label">Today</div>
+                        <div class="chart-bar-label">今日</div>
                     </div>
                     <div class="chart-bar-wrapper">
                         <div class="chart-bar" style="height: 0px;"></div>
                         <div class="chart-bar-value">0</div>
-                        <div class="chart-bar-label">Week</div>
+                        <div class="chart-bar-label">本周</div>
                     </div>
                     <div class="chart-bar-wrapper">
                         <div class="chart-bar" style="height: 0px;"></div>
                         <div class="chart-bar-value">0</div>
-                        <div class="chart-bar-label">Month</div>
+                        <div class="chart-bar-label">本月</div>
                     </div>
                 </div>
             </div>
             <div style="margin-top: 20px;">
-                <h3 style="font-size: 1rem; color: #333; margin-bottom: 12px;">Performance</h3>
+                <h3 style="font-size: 1rem; color: #333; margin-bottom: 12px;">性能指标</h3>
                 <div class="stats-grid">
                     <div style="background: #f8f9fa; border-radius: 8px; padding: 16px;">
-                        <div style="font-size: 0.85rem; color: #666;">Avg Response Time (Today)</div>
+                        <div style="font-size: 0.85rem; color: #666;">今日平均响应时间</div>
                         <div style="font-size: 1.5rem; font-weight: 600; color: #333;" id="stat-avg-time">-</div>
                     </div>
                     <div style="background: #f8f9fa; border-radius: 8px; padding: 16px;">
-                        <div style="font-size: 0.85rem; color: #666;">Success Rate (Today)</div>
+                        <div style="font-size: 0.85rem; color: #666;">今日成功率</div>
                         <div style="font-size: 1.5rem; font-weight: 600; color: #2ed573;" id="stat-success-rate">-</div>
                     </div>
                 </div>
@@ -424,19 +480,19 @@ export function renderAdminUI(): string {
         <!-- Vendor Keys Tab -->
         <div id="vendor-tab" class="card hidden">
             <div class="card-header">
-                <h2 class="card-title">Vendor Keys</h2>
-                <button class="btn btn-primary" onclick="showAddVendorModal()">Add Key</button>
+                <h2 class="card-title">供应商密钥</h2>
+                <button class="btn btn-primary" onclick="showAddVendorModal()">添加密钥</button>
             </div>
             <table>
                 <thead>
                     <tr>
                         <th>#</th>
-                        <th>Vendor Name</th>
-                        <th>API Key</th>
-                        <th>Today Usage</th>
-                        <th>Expires</th>
-                        <th>Status</th>
-                        <th>Actions</th>
+                        <th>供应商名称</th>
+                        <th>API密钥</th>
+                        <th>今日用量</th>
+                        <th>过期时间</th>
+                        <th>状态</th>
+                        <th>操作</th>
                     </tr>
                 </thead>
                 <tbody id="vendor-keys-table"></tbody>
@@ -446,19 +502,19 @@ export function renderAdminUI(): string {
         <!-- Custom Keys Tab -->
         <div id="custom-tab" class="card hidden">
             <div class="card-header">
-                <h2 class="card-title">Custom Keys</h2>
-                <button class="btn btn-primary" onclick="showAddCustomModal()">Add Key</button>
+                <h2 class="card-title">自定义密钥</h2>
+                <button class="btn btn-primary" onclick="showAddCustomModal()">添加密钥</button>
             </div>
             <table>
                 <thead>
                     <tr>
                         <th>#</th>
-                        <th>Key Name</th>
-                        <th>API Key</th>
-                        <th>Usage</th>
-                        <th>Expires</th>
-                        <th>Status</th>
-                        <th>Actions</th>
+                        <th>密钥名称</th>
+                        <th>API密钥</th>
+                        <th>用量</th>
+                        <th>过期时间</th>
+                        <th>状态</th>
+                        <th>操作</th>
                     </tr>
                 </thead>
                 <tbody id="custom-keys-table"></tbody>
@@ -468,21 +524,70 @@ export function renderAdminUI(): string {
         <!-- Logs Tab -->
         <div id="logs-tab" class="card hidden">
             <div class="card-header">
-                <h2 class="card-title">Recent Request Logs</h2>
-                <button class="btn btn-primary btn-sm" onclick="loadStats()">Refresh</button>
+                <h2 class="card-title">最近请求日志</h2>
+                <button class="btn btn-primary btn-sm" onclick="loadStats()">刷新</button>
             </div>
             <table class="logs-table">
                 <thead>
                     <tr>
-                        <th>Time</th>
-                        <th>Endpoint</th>
-                        <th>Status</th>
-                        <th>Response Time</th>
+                        <th>时间</th>
+                        <th>端点</th>
+                        <th>状态</th>
+                        <th>响应时间</th>
                         <th>IP</th>
+                        <th>系统提示词</th>
+                        <th>用户提示词</th>
                     </tr>
                 </thead>
                 <tbody id="logs-table"></tbody>
             </table>
+            <div class="pagination" id="logs-pagination"></div>
+        </div>
+
+        <!-- Ranking Tab -->
+        <div id="ranking-tab" class="card hidden">
+            <div class="card-header">
+                <h2 class="card-title">请求排行榜</h2>
+                <button class="btn btn-primary btn-sm" onclick="loadRanking()">刷新</button>
+            </div>
+            <div class="ranking-controls">
+                <select id="ranking-period" onchange="loadRanking()">
+                    <option value="today">今日</option>
+                    <option value="week">本周</option>
+                    <option value="month">本月</option>
+                </select>
+            </div>
+
+            <h3 style="font-size: 1rem; color: #333; margin: 20px 0 12px;">密钥请求排行</h3>
+            <table class="logs-table">
+                <thead>
+                    <tr>
+                        <th>排名</th>
+                        <th>密钥名称</th>
+                        <th>请求次数</th>
+                        <th>成功</th>
+                        <th>失败</th>
+                        <th>平均响应时间</th>
+                    </tr>
+                </thead>
+                <tbody id="key-ranking-table"></tbody>
+            </table>
+            <div class="pagination" id="key-ranking-pagination"></div>
+
+            <h3 style="font-size: 1rem; color: #333; margin: 30px 0 12px;">IP请求排行</h3>
+            <table class="logs-table">
+                <thead>
+                    <tr>
+                        <th>排名</th>
+                        <th>IP地址</th>
+                        <th>请求次数</th>
+                        <th>成功</th>
+                        <th>失败</th>
+                    </tr>
+                </thead>
+                <tbody id="ip-ranking-table"></tbody>
+            </table>
+            <div class="pagination" id="ip-ranking-pagination"></div>
         </div>
     </div>
 
@@ -490,25 +595,25 @@ export function renderAdminUI(): string {
     <div id="vendor-modal" class="modal">
         <div class="modal-content">
             <div class="modal-header">
-                <h3 id="vendor-modal-title">Add Vendor Key</h3>
+                <h3 id="vendor-modal-title">添加供应商密钥</h3>
                 <button class="modal-close" onclick="closeModal('vendor-modal')">&times;</button>
             </div>
             <form id="vendor-form" onsubmit="handleVendorSubmit(event)">
                 <input type="hidden" id="vendor-id">
                 <div class="form-group">
-                    <label class="form-label">Vendor Name</label>
+                    <label class="form-label">供应商名称</label>
                     <input type="text" class="form-input" id="vendor-name" required>
                 </div>
                 <div class="form-group">
-                    <label class="form-label">API Key</label>
+                    <label class="form-label">API密钥</label>
                     <input type="text" class="form-input" id="vendor-api-key" required>
                 </div>
                 <div class="form-group">
-                    <label class="form-label">Usage Limit</label>
+                    <label class="form-label">用量限制</label>
                     <input type="number" class="form-input" id="vendor-limit" value="500">
-                    <div class="form-hint">Maximum number of requests allowed per day</div>
+                    <div class="form-hint">每日允许的最大请求数</div>
                 </div>
-                <button type="submit" class="btn btn-primary" style="width: 100%">Save</button>
+                <button type="submit" class="btn btn-primary" style="width: 100%">保存</button>
             </form>
         </div>
     </div>
@@ -517,32 +622,32 @@ export function renderAdminUI(): string {
     <div id="custom-modal" class="modal">
         <div class="modal-content">
             <div class="modal-header">
-                <h3 id="custom-modal-title">Add Custom Key</h3>
+                <h3 id="custom-modal-title">添加自定义密钥</h3>
                 <button class="modal-close" onclick="closeModal('custom-modal')">&times;</button>
             </div>
             <form id="custom-form" onsubmit="handleCustomSubmit(event)">
                 <input type="hidden" id="custom-id">
                 <div class="form-group">
-                    <label class="form-label">Key Name</label>
+                    <label class="form-label">密钥名称</label>
                     <input type="text" class="form-input" id="custom-name" required>
-                    <div class="form-hint">A friendly name for this key</div>
+                    <div class="form-hint">为此密钥设置一个友好的名称</div>
                 </div>
                 <div class="form-group">
-                    <label class="form-label">API Key (optional)</label>
+                    <label class="form-label">API密钥 (可选)</label>
                     <input type="text" class="form-input" id="custom-api-key">
-                    <div class="form-hint">Leave empty to auto-generate</div>
+                    <div class="form-hint">留空则自动生成</div>
                 </div>
                 <div class="form-group">
-                    <label class="form-label">Usage Limit</label>
+                    <label class="form-label">用量限制</label>
                     <input type="number" class="form-input" id="custom-limit" value="-1">
-                    <div class="form-hint">-1 for unlimited</div>
+                    <div class="form-hint">-1 表示无限制</div>
                 </div>
                 <div class="form-group">
-                    <label class="form-label">Expires At (optional)</label>
+                    <label class="form-label">过期时间 (可选)</label>
                     <input type="datetime-local" class="form-input" id="custom-expires">
-                    <div class="form-hint">Leave empty for no expiration</div>
+                    <div class="form-hint">留空表示永不过期</div>
                 </div>
-                <button type="submit" class="btn btn-primary" style="width: 100%">Save</button>
+                <button type="submit" class="btn btn-primary" style="width: 100%">保存</button>
             </form>
         </div>
     </div>
@@ -551,21 +656,30 @@ export function renderAdminUI(): string {
     <div id="new-key-modal" class="modal">
         <div class="modal-content">
             <div class="modal-header">
-                <h3>New API Key Created</h3>
+                <h3>新API密钥已创建</h3>
                 <button class="modal-close" onclick="closeModal('new-key-modal')">&times;</button>
             </div>
             <div class="alert alert-success">
-                Please copy and save this API key. It will not be shown again.
+                请复制并保存此API密钥，它将不会再次显示。
             </div>
             <div style="background: #f8f9fa; padding: 16px; border-radius: 8px; margin-bottom: 16px;">
                 <code id="new-key-value" style="word-break: break-all; font-size: 1rem;"></code>
             </div>
-            <button class="btn btn-primary" style="width: 100%" onclick="copyNewKey()">Copy to Clipboard</button>
+            <button class="btn btn-primary" style="width: 100%" onclick="copyNewKey()">复制到剪贴板</button>
         </div>
     </div>
 
     <script>
         const API_BASE = '/admin/api';
+        const PAGE_SIZE = 20;
+
+        // Pagination state
+        let logsPage = 0;
+        let allLogs = [];
+        let keyRankingPage = 0;
+        let allKeyRanking = [];
+        let ipRankingPage = 0;
+        let allIPRanking = [];
 
         // Tab switching
         document.querySelectorAll('.tab').forEach(tab => {
@@ -578,6 +692,11 @@ export function renderAdminUI(): string {
                 document.getElementById('vendor-tab').classList.toggle('hidden', tabName !== 'vendor');
                 document.getElementById('custom-tab').classList.toggle('hidden', tabName !== 'custom');
                 document.getElementById('logs-tab').classList.toggle('hidden', tabName !== 'logs');
+                document.getElementById('ranking-tab').classList.toggle('hidden', tabName !== 'ranking');
+
+                if (tabName === 'ranking') {
+                    loadRanking();
+                }
             });
         });
 
@@ -600,6 +719,24 @@ export function renderAdminUI(): string {
             document.getElementById(id).classList.remove('show');
         }
 
+        // Pagination helper
+        function renderPagination(containerId, totalItems, currentPage, onPageChange) {
+            const container = document.getElementById(containerId);
+            const totalPages = Math.ceil(totalItems / PAGE_SIZE);
+
+            if (totalPages <= 1) {
+                container.innerHTML = '';
+                return;
+            }
+
+            let html = '';
+            html += \`<button \${currentPage === 0 ? 'disabled' : ''} onclick="\${onPageChange}(\${currentPage - 1})">上一页</button>\`;
+            html += \`<span class="pagination-info">第 \${currentPage + 1} / \${totalPages} 页 (共 \${totalItems} 条)</span>\`;
+            html += \`<button \${currentPage >= totalPages - 1 ? 'disabled' : ''} onclick="\${onPageChange}(\${currentPage + 1})">下一页</button>\`;
+
+            container.innerHTML = html;
+        }
+
         // Stats Dashboard
         async function loadStats() {
             try {
@@ -613,7 +750,7 @@ export function renderAdminUI(): string {
 
                 // Update performance stats
                 const avgTime = data.today.avg_response_time_ms;
-                document.getElementById('stat-avg-time').textContent = avgTime ? Math.round(avgTime) + 'ms' : 'N/A';
+                document.getElementById('stat-avg-time').textContent = avgTime ? Math.round(avgTime) + 'ms' : '暂无数据';
 
                 const successRate = data.today.total_requests > 0
                     ? Math.round((data.today.successful_requests / data.today.total_requests) * 100)
@@ -633,24 +770,128 @@ export function renderAdminUI(): string {
                 });
 
                 // Update logs table
-                const logsTable = document.getElementById('logs-table');
-                logsTable.innerHTML = (data.recentLogs || []).map(log => {
-                    const statusClass = log.status_code >= 200 && log.status_code < 400 ? 'success' : 'error';
-                    const time = new Date(log.created_at).toLocaleString();
-                    return \`
-                        <tr>
-                            <td class="log-time">\${time}</td>
-                            <td><span class="log-endpoint">\${log.endpoint}</span></td>
-                            <td><span class="log-status \${statusClass}">\${log.status_code || 'N/A'}</span></td>
-                            <td>\${log.response_time_ms ? log.response_time_ms + 'ms' : 'N/A'}</td>
-                            <td>\${log.ip_address || 'N/A'}</td>
-                        </tr>
-                    \`;
-                }).join('');
+                allLogs = data.recentLogs || [];
+                logsPage = 0;
+                renderLogsPage();
 
             } catch (error) {
-                console.error('Failed to load stats:', error);
+                console.error('加载统计数据失败:', error);
             }
+        }
+
+        function renderLogsPage() {
+            const start = logsPage * PAGE_SIZE;
+            const end = start + PAGE_SIZE;
+            const pageLogs = allLogs.slice(start, end);
+
+            const logsTable = document.getElementById('logs-table');
+            logsTable.innerHTML = pageLogs.map(log => {
+                const statusClass = log.status_code >= 200 && log.status_code < 400 ? 'success' : 'error';
+                const time = new Date(log.created_at).toLocaleString('zh-CN');
+                const sysPrompt = log.system_prompt ? (log.system_prompt.length > 50 ? log.system_prompt.substring(0, 50) + '...' : log.system_prompt) : '-';
+                const userPrompt = log.user_prompt ? (log.user_prompt.length > 50 ? log.user_prompt.substring(0, 50) + '...' : log.user_prompt) : '-';
+                return \`
+                    <tr>
+                        <td class="log-time">\${time}</td>
+                        <td><span class="log-endpoint">\${log.endpoint}</span></td>
+                        <td><span class="log-status \${statusClass}">\${log.status_code || '暂无'}</span></td>
+                        <td>\${log.response_time_ms ? log.response_time_ms + 'ms' : '暂无'}</td>
+                        <td>\${log.ip_address || '暂无'}</td>
+                        <td class="log-prompt" title="\${log.system_prompt || ''}">\${sysPrompt}</td>
+                        <td class="log-prompt" title="\${log.user_prompt || ''}">\${userPrompt}</td>
+                    </tr>
+                \`;
+            }).join('');
+
+            renderPagination('logs-pagination', allLogs.length, logsPage, 'setLogsPage');
+        }
+
+        function setLogsPage(page) {
+            logsPage = page;
+            renderLogsPage();
+        }
+
+        // Ranking functions
+        async function loadRanking() {
+            try {
+                const period = document.getElementById('ranking-period').value;
+                const response = await fetch(API_BASE + '/ranking?period=' + period);
+                const data = await response.json();
+
+                allKeyRanking = data.keyRanking || [];
+                allIPRanking = data.ipRanking || [];
+                keyRankingPage = 0;
+                ipRankingPage = 0;
+
+                renderKeyRankingPage();
+                renderIPRankingPage();
+            } catch (error) {
+                console.error('加载排行榜失败:', error);
+            }
+        }
+
+        function getRankClass(rank) {
+            if (rank === 1) return 'gold';
+            if (rank === 2) return 'silver';
+            if (rank === 3) return 'bronze';
+            return '';
+        }
+
+        function renderKeyRankingPage() {
+            const start = keyRankingPage * PAGE_SIZE;
+            const end = start + PAGE_SIZE;
+            const pageData = allKeyRanking.slice(start, end);
+
+            const tbody = document.getElementById('key-ranking-table');
+            tbody.innerHTML = pageData.map((item, idx) => {
+                const rank = start + idx + 1;
+                const rankClass = getRankClass(rank);
+                return \`
+                    <tr>
+                        <td><span class="ranking-number \${rankClass}">#\${rank}</span></td>
+                        <td>\${item.key_name || '未知'}</td>
+                        <td>\${item.request_count}</td>
+                        <td style="color: #2ed573">\${item.successful_count}</td>
+                        <td style="color: #ff4757">\${item.failed_count}</td>
+                        <td>\${item.avg_response_time_ms ? Math.round(item.avg_response_time_ms) + 'ms' : '暂无'}</td>
+                    </tr>
+                \`;
+            }).join('');
+
+            renderPagination('key-ranking-pagination', allKeyRanking.length, keyRankingPage, 'setKeyRankingPage');
+        }
+
+        function setKeyRankingPage(page) {
+            keyRankingPage = page;
+            renderKeyRankingPage();
+        }
+
+        function renderIPRankingPage() {
+            const start = ipRankingPage * PAGE_SIZE;
+            const end = start + PAGE_SIZE;
+            const pageData = allIPRanking.slice(start, end);
+
+            const tbody = document.getElementById('ip-ranking-table');
+            tbody.innerHTML = pageData.map((item, idx) => {
+                const rank = start + idx + 1;
+                const rankClass = getRankClass(rank);
+                return \`
+                    <tr>
+                        <td><span class="ranking-number \${rankClass}">#\${rank}</span></td>
+                        <td>\${item.ip_address || '未知'}</td>
+                        <td>\${item.request_count}</td>
+                        <td style="color: #2ed573">\${item.successful_count}</td>
+                        <td style="color: #ff4757">\${item.failed_count}</td>
+                    </tr>
+                \`;
+            }).join('');
+
+            renderPagination('ip-ranking-pagination', allIPRanking.length, ipRankingPage, 'setIPRankingPage');
+        }
+
+        function setIPRankingPage(page) {
+            ipRankingPage = page;
+            renderIPRankingPage();
         }
 
         // Vendor Keys functions
@@ -660,17 +901,17 @@ export function renderAdminUI(): string {
             const tbody = document.getElementById('vendor-keys-table');
             tbody.innerHTML = keys.map((key, index) => {
                 // Format expiration date
-                let expiryDisplay = '<span class="expiry-date">N/A</span>';
+                let expiryDisplay = '<span class="expiry-date">暂无</span>';
                 if (key.expires_at) {
                     const expiryDate = new Date(key.expires_at);
                     const now = new Date();
                     const daysUntilExpiry = Math.ceil((expiryDate - now) / (1000 * 60 * 60 * 24));
-                    const dateStr = expiryDate.toLocaleDateString();
+                    const dateStr = expiryDate.toLocaleDateString('zh-CN');
 
                     if (key.is_expired) {
-                        expiryDisplay = \`<span class="expiry-date expiry-expired">Expired</span>\`;
+                        expiryDisplay = \`<span class="expiry-date expiry-expired">已过期</span>\`;
                     } else if (daysUntilExpiry <= 3) {
-                        expiryDisplay = \`<span class="expiry-date expiry-warning">\${dateStr} (\${daysUntilExpiry}d)</span>\`;
+                        expiryDisplay = \`<span class="expiry-date expiry-warning">\${dateStr} (\${daysUntilExpiry}天)</span>\`;
                     } else {
                         expiryDisplay = \`<span class="expiry-date expiry-valid">\${dateStr}</span>\`;
                     }
@@ -679,11 +920,11 @@ export function renderAdminUI(): string {
                 // Determine status
                 let statusDisplay;
                 if (key.is_expired) {
-                    statusDisplay = '<span class="status-expired">Expired</span>';
+                    statusDisplay = '<span class="status-expired">已过期</span>';
                 } else if (key.is_active) {
-                    statusDisplay = '<span class="status-active">Active</span>';
+                    statusDisplay = '<span class="status-active">已启用</span>';
                 } else {
-                    statusDisplay = '<span class="status-inactive">Inactive</span>';
+                    statusDisplay = '<span class="status-inactive">已禁用</span>';
                 }
 
                 return \`
@@ -696,21 +937,21 @@ export function renderAdminUI(): string {
                             <div class="usage-fill" style="width: \${Math.min(100, (key.used_count / key.usage_limit) * 100)}%"></div>
                         </div>
                         <div class="usage-text">\${key.used_count} / \${key.usage_limit}</div>
-                        <div class="reset-info">Resets daily</div>
+                        <div class="reset-info">每日重置</div>
                     </td>
                     <td>\${expiryDisplay}</td>
                     <td>\${statusDisplay}</td>
                     <td class="actions">
-                        <button class="btn btn-sm btn-primary" onclick="editVendorKey(\${key.id})">Edit</button>
-                        <button class="btn btn-sm \${key.is_active ? 'btn-danger' : 'btn-primary'}" onclick="toggleVendorKey(\${key.id}, \${key.is_active})">\${key.is_active ? 'Disable' : 'Enable'}</button>
-                        <button class="btn btn-sm btn-danger" onclick="deleteVendorKey(\${key.id})">Delete</button>
+                        <button class="btn btn-sm btn-primary" onclick="editVendorKey(\${key.id})">编辑</button>
+                        <button class="btn btn-sm \${key.is_active ? 'btn-danger' : 'btn-primary'}" onclick="toggleVendorKey(\${key.id}, \${key.is_active})">\${key.is_active ? '禁用' : '启用'}</button>
+                        <button class="btn btn-sm btn-danger" onclick="deleteVendorKey(\${key.id})">删除</button>
                     </td>
                 </tr>
             \`}).join('');
         }
 
         function showAddVendorModal() {
-            document.getElementById('vendor-modal-title').textContent = 'Add Vendor Key';
+            document.getElementById('vendor-modal-title').textContent = '添加供应商密钥';
             document.getElementById('vendor-id').value = '';
             document.getElementById('vendor-name').value = 'manus';
             document.getElementById('vendor-api-key').value = '';
@@ -725,11 +966,11 @@ export function renderAdminUI(): string {
             const key = keys.find(k => k.id === id);
             if (!key) return;
 
-            document.getElementById('vendor-modal-title').textContent = 'Edit Vendor Key';
+            document.getElementById('vendor-modal-title').textContent = '编辑供应商密钥';
             document.getElementById('vendor-id').value = id;
             document.getElementById('vendor-name').value = key.vendor_name;
             document.getElementById('vendor-api-key').value = '';
-            document.getElementById('vendor-api-key').placeholder = 'Leave empty to keep existing';
+            document.getElementById('vendor-api-key').placeholder = '留空保持不变';
             document.getElementById('vendor-api-key').readOnly = false;
             document.getElementById('vendor-limit').value = key.usage_limit;
             showModal('vendor-modal');
@@ -757,10 +998,10 @@ export function renderAdminUI(): string {
             if (response.ok) {
                 closeModal('vendor-modal');
                 loadVendorKeys();
-                showAlert(id ? 'Key updated successfully' : 'Key added successfully');
+                showAlert(id ? '密钥更新成功' : '密钥添加成功');
             } else {
                 const error = await response.json();
-                showAlert(error.error || 'Operation failed', 'error');
+                showAlert(error.error || '操作失败', 'error');
             }
         }
 
@@ -772,16 +1013,16 @@ export function renderAdminUI(): string {
             });
             if (response.ok) {
                 loadVendorKeys();
-                showAlert('Key status updated');
+                showAlert('密钥状态已更新');
             }
         }
 
         async function deleteVendorKey(id) {
-            if (!confirm('Are you sure you want to delete this key?')) return;
+            if (!confirm('确定要删除此密钥吗？')) return;
             const response = await fetch(API_BASE + '/vendor-keys/' + id, { method: 'DELETE' });
             if (response.ok) {
                 loadVendorKeys();
-                showAlert('Key deleted successfully');
+                showAlert('密钥删除成功');
             }
         }
 
@@ -792,21 +1033,21 @@ export function renderAdminUI(): string {
             const tbody = document.getElementById('custom-keys-table');
             tbody.innerHTML = keys.map((key, index) => {
                 const usageDisplay = key.usage_limit === -1
-                    ? \`<span class="usage-text">\${key.used_count} / Unlimited</span>\`
+                    ? \`<span class="usage-text">\${key.used_count} / 无限制</span>\`
                     : \`<div class="usage-bar"><div class="usage-fill" style="width: \${Math.min(100, (key.used_count / key.usage_limit) * 100)}%"></div></div><div class="usage-text">\${key.used_count} / \${key.usage_limit}</div>\`;
 
                 // Format expiration date for custom keys
-                let expiryDisplay = '<span class="expiry-date">Never</span>';
+                let expiryDisplay = '<span class="expiry-date">永不过期</span>';
                 if (key.expires_at) {
                     const expiryDate = new Date(key.expires_at);
                     const now = new Date();
                     const daysUntilExpiry = Math.ceil((expiryDate - now) / (1000 * 60 * 60 * 24));
-                    const dateStr = expiryDate.toLocaleDateString();
+                    const dateStr = expiryDate.toLocaleDateString('zh-CN');
 
                     if (key.is_expired) {
-                        expiryDisplay = \`<span class="expiry-date expiry-expired">Expired</span>\`;
+                        expiryDisplay = \`<span class="expiry-date expiry-expired">已过期</span>\`;
                     } else if (daysUntilExpiry <= 3) {
-                        expiryDisplay = \`<span class="expiry-date expiry-warning">\${dateStr} (\${daysUntilExpiry}d)</span>\`;
+                        expiryDisplay = \`<span class="expiry-date expiry-warning">\${dateStr} (\${daysUntilExpiry}天)</span>\`;
                     } else {
                         expiryDisplay = \`<span class="expiry-date expiry-valid">\${dateStr}</span>\`;
                     }
@@ -815,11 +1056,11 @@ export function renderAdminUI(): string {
                 // Determine status
                 let statusDisplay;
                 if (key.is_expired) {
-                    statusDisplay = '<span class="status-expired">Expired</span>';
+                    statusDisplay = '<span class="status-expired">已过期</span>';
                 } else if (key.is_active) {
-                    statusDisplay = '<span class="status-active">Active</span>';
+                    statusDisplay = '<span class="status-active">已启用</span>';
                 } else {
-                    statusDisplay = '<span class="status-inactive">Inactive</span>';
+                    statusDisplay = '<span class="status-inactive">已禁用</span>';
                 }
 
                 return \`
@@ -831,16 +1072,16 @@ export function renderAdminUI(): string {
                     <td>\${expiryDisplay}</td>
                     <td>\${statusDisplay}</td>
                     <td class="actions">
-                        <button class="btn btn-sm btn-primary" onclick="editCustomKey(\${key.id})">Edit</button>
-                        <button class="btn btn-sm \${key.is_active ? 'btn-danger' : 'btn-primary'}" onclick="toggleCustomKey(\${key.id}, \${key.is_active})">\${key.is_active ? 'Disable' : 'Enable'}</button>
-                        <button class="btn btn-sm btn-danger" onclick="deleteCustomKey(\${key.id})">Delete</button>
+                        <button class="btn btn-sm btn-primary" onclick="editCustomKey(\${key.id})">编辑</button>
+                        <button class="btn btn-sm \${key.is_active ? 'btn-danger' : 'btn-primary'}" onclick="toggleCustomKey(\${key.id}, \${key.is_active})">\${key.is_active ? '禁用' : '启用'}</button>
+                        <button class="btn btn-sm btn-danger" onclick="deleteCustomKey(\${key.id})">删除</button>
                     </td>
                 </tr>
             \`}).join('');
         }
 
         function showAddCustomModal() {
-            document.getElementById('custom-modal-title').textContent = 'Add Custom Key';
+            document.getElementById('custom-modal-title').textContent = '添加自定义密钥';
             document.getElementById('custom-id').value = '';
             document.getElementById('custom-name').value = 'vbdo007_freekey';
             document.getElementById('custom-api-key').value = '';
@@ -856,11 +1097,11 @@ export function renderAdminUI(): string {
             const key = keys.find(k => k.id === id);
             if (!key) return;
 
-            document.getElementById('custom-modal-title').textContent = 'Edit Custom Key';
+            document.getElementById('custom-modal-title').textContent = '编辑自定义密钥';
             document.getElementById('custom-id').value = id;
             document.getElementById('custom-name').value = key.key_name;
             document.getElementById('custom-api-key').value = '';
-            document.getElementById('custom-api-key').placeholder = 'Leave empty to keep existing';
+            document.getElementById('custom-api-key').placeholder = '留空保持不变';
             document.getElementById('custom-limit').value = key.usage_limit;
 
             // Set expires_at if exists
@@ -913,10 +1154,10 @@ export function renderAdminUI(): string {
                 }
 
                 loadCustomKeys();
-                showAlert(id ? 'Key updated successfully' : 'Key added successfully');
+                showAlert(id ? '密钥更新成功' : '密钥添加成功');
             } else {
                 const error = await response.json();
-                showAlert(error.error || 'Operation failed', 'error');
+                showAlert(error.error || '操作失败', 'error');
             }
         }
 
@@ -928,23 +1169,23 @@ export function renderAdminUI(): string {
             });
             if (response.ok) {
                 loadCustomKeys();
-                showAlert('Key status updated');
+                showAlert('密钥状态已更新');
             }
         }
 
         async function deleteCustomKey(id) {
-            if (!confirm('Are you sure you want to delete this key?')) return;
+            if (!confirm('确定要删除此密钥吗？')) return;
             const response = await fetch(API_BASE + '/custom-keys/' + id, { method: 'DELETE' });
             if (response.ok) {
                 loadCustomKeys();
-                showAlert('Key deleted successfully');
+                showAlert('密钥删除成功');
             }
         }
 
         function copyNewKey() {
             const key = document.getElementById('new-key-value').textContent;
             navigator.clipboard.writeText(key).then(() => {
-                showAlert('Copied to clipboard!');
+                showAlert('已复制到剪贴板!');
             });
         }
 
@@ -963,7 +1204,7 @@ export function renderLoginPage(error?: string): string {
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Admin Login</title>
+    <title>管理员登录</title>
     <style>
         * {
             margin: 0;
@@ -1039,14 +1280,14 @@ export function renderLoginPage(error?: string): string {
 </head>
 <body>
     <div class="login-card">
-        <h1>Admin Login</h1>
+        <h1>管理员登录</h1>
         ${error ? `<div class="error">${error}</div>` : ''}
         <form method="POST" action="/admin/login">
             <div class="form-group">
-                <label class="form-label">Password</label>
+                <label class="form-label">密码</label>
                 <input type="password" name="password" class="form-input" required autofocus>
             </div>
-            <button type="submit" class="btn">Login</button>
+            <button type="submit" class="btn">登录</button>
         </form>
     </div>
 </body>

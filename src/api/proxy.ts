@@ -220,6 +220,110 @@ function buildPromptFromChatMessages(messages: Message[] | undefined, attachment
     return parts.filter(Boolean).join("\n\n").trim();
 }
 
+// Extract system prompt and user prompt for logging
+function extractPromptsForLogging(messages: Message[] | undefined): { systemPrompt: string | null; userPrompt: string | null } {
+    if (!messages || messages.length === 0) {
+        return { systemPrompt: null, userPrompt: null };
+    }
+
+    const systemMsgs: string[] = [];
+    let lastUserPrompt: string | null = null;
+    let hasFile = false;
+
+    for (const m of messages) {
+        const role = String(m?.role || "").trim();
+        const content = m?.content;
+
+        // Check if content has files/images
+        if (Array.isArray(content)) {
+            for (const p of content) {
+                if (p && typeof p === "object") {
+                    const part = p as ContentPart;
+                    if (part.type === "image_url" || part.type === "input_image" || part.type === "input_file") {
+                        hasFile = true;
+                    }
+                }
+            }
+        }
+
+        const text = extractTextFromContent(content);
+
+        if (role === "system" && text) {
+            systemMsgs.push(text);
+        } else if (role === "user") {
+            // Only keep the last user message
+            lastUserPrompt = text || null;
+        }
+    }
+
+    // Append [文件] indicator if there are files
+    if (hasFile && lastUserPrompt) {
+        lastUserPrompt = lastUserPrompt + " [文件]";
+    } else if (hasFile && !lastUserPrompt) {
+        lastUserPrompt = "[文件]";
+    }
+
+    return {
+        systemPrompt: systemMsgs.length > 0 ? systemMsgs.join("\n") : null,
+        userPrompt: lastUserPrompt,
+    };
+}
+
+// Extract prompts from Responses API request for logging
+function extractPromptsFromResponsesForLogging(body: ResponsesBody): { systemPrompt: string | null; userPrompt: string | null } {
+    const instructions = body?.instructions;
+    const input = body?.input;
+
+    let systemPrompt: string | null = null;
+    let userPrompt: string | null = null;
+    let hasFile = false;
+
+    if (typeof instructions === "string" && instructions.trim()) {
+        systemPrompt = instructions.trim();
+    }
+
+    if (typeof input === "string") {
+        userPrompt = input.trim() || null;
+    } else if (Array.isArray(input)) {
+        // Find last user message
+        for (let i = input.length - 1; i >= 0; i--) {
+            const item = input[i];
+            if (typeof item === "string") {
+                userPrompt = item.trim() || null;
+                break;
+            }
+            if (item && typeof item === "object") {
+                const msg = item as Message;
+                const role = String(msg.role || "user").trim();
+                if (role === "user") {
+                    // Check for files
+                    if (Array.isArray(msg.content)) {
+                        for (const p of msg.content) {
+                            if (p && typeof p === "object") {
+                                const part = p as ContentPart;
+                                if (part.type === "image_url" || part.type === "input_image" || part.type === "input_file") {
+                                    hasFile = true;
+                                }
+                            }
+                        }
+                    }
+                    userPrompt = extractTextFromContent(msg.content) || null;
+                    break;
+                }
+            }
+        }
+    }
+
+    // Append [文件] indicator if there are files
+    if (hasFile && userPrompt) {
+        userPrompt = userPrompt + " [文件]";
+    } else if (hasFile && !userPrompt) {
+        userPrompt = "[文件]";
+    }
+
+    return { systemPrompt, userPrompt };
+}
+
 function buildPromptFromResponsesRequest(body: ResponsesBody, attachmentNotes: string = ""): string {
     const instructions = body?.instructions;
     const input = body?.input;
@@ -956,6 +1060,9 @@ export async function handleChatCompletions(request: Request, db: D1Database, en
 
     const stream = !!body.stream;
 
+    // Extract prompts for logging
+    const { systemPrompt, userPrompt } = extractPromptsForLogging(messages);
+
     // 1) Attachment parsing + upload
     const rawItems = extractAttachmentsFromChat(messages);
     const attachments: ManusAttachment[] = [];
@@ -1013,6 +1120,8 @@ export async function handleChatCompletions(request: Request, db: D1Database, en
                 responseTimeMs: Date.now() - startTime,
                 ip,
                 userAgent,
+                systemPrompt,
+                userPrompt,
             });
 
             return jsonResponse(openAIResponse);
@@ -1036,6 +1145,8 @@ export async function handleChatCompletions(request: Request, db: D1Database, en
                     responseTimeMs: Date.now() - startTime,
                     ip,
                     userAgent,
+                    systemPrompt,
+                    userPrompt,
                 });
             } catch (e) {
                 const err = e as Error;
@@ -1054,6 +1165,8 @@ export async function handleChatCompletions(request: Request, db: D1Database, en
                     ip,
                     userAgent,
                     error: err.message,
+                    systemPrompt,
+                    userPrompt,
                 });
             } finally {
                 try {
@@ -1082,6 +1195,8 @@ export async function handleChatCompletions(request: Request, db: D1Database, en
             ip,
             userAgent,
             error: err.message,
+            systemPrompt,
+            userPrompt,
         });
         return errorResponse(`Request failed: ${err.message}`, 500);
     }
@@ -1173,6 +1288,9 @@ export async function handleResponses(request: Request, db: D1Database, env?: En
     }
 
     const stream = !!body.stream;
+
+    // Extract prompts for logging
+    const { systemPrompt, userPrompt } = extractPromptsFromResponsesForLogging(body);
 
     // 1) Attachment parsing + upload
     const rawItems = extractAttachmentsFromResponses(body);
@@ -1269,6 +1387,8 @@ export async function handleResponses(request: Request, db: D1Database, env?: En
                 responseTimeMs: Date.now() - startTime,
                 ip,
                 userAgent,
+                systemPrompt,
+                userPrompt,
             });
 
             return jsonResponse(makeResponseObj("completed", text));
@@ -1309,6 +1429,8 @@ export async function handleResponses(request: Request, db: D1Database, env?: En
                     responseTimeMs: Date.now() - startTime,
                     ip,
                     userAgent,
+                    systemPrompt,
+                    userPrompt,
                 });
             } catch (e) {
                 const err = e as Error;
@@ -1332,6 +1454,8 @@ export async function handleResponses(request: Request, db: D1Database, env?: En
                     ip,
                     userAgent,
                     error: err.message,
+                    systemPrompt,
+                    userPrompt,
                 });
             } finally {
                 try {
@@ -1360,6 +1484,8 @@ export async function handleResponses(request: Request, db: D1Database, env?: En
             ip,
             userAgent,
             error: err.message,
+            systemPrompt,
+            userPrompt,
         });
         return errorResponse(`Request failed: ${err.message}`, 500);
     }

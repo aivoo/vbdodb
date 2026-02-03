@@ -14,7 +14,7 @@ import {
 import { renderAdminUI, renderLoginPage } from "./admin/ui";
 import { handleCors, errorResponse, corsHeaders, jsonResponse } from "./utils/helpers";
 import { createSession, validateSession, deleteSession, cleanExpiredSessions } from "./db/sessions";
-import { getRequestStats, getRecentLogs } from "./db/logs";
+import { getRequestStats, getRecentLogs, getKeyRanking, getIPRanking } from "./db/logs";
 import { checkRateLimit, incrementRateLimit, cleanOldRateLimits } from "./db/ratelimit";
 
 function generateSessionToken(): string {
@@ -220,7 +220,7 @@ export default {
                     getRequestStats(env.DB, "today"),
                     getRequestStats(env.DB, "week"),
                     getRequestStats(env.DB, "month"),
-                    getRecentLogs(env.DB, 20),
+                    getRecentLogs(env.DB, 100),
                 ]);
 
                 return jsonResponse({
@@ -228,6 +228,21 @@ export default {
                     week: weekStats,
                     month: monthStats,
                     recentLogs,
+                });
+            }
+
+            // Ranking API
+            if (path === "/admin/api/ranking" && method === "GET") {
+                const period = (url.searchParams.get("period") as "today" | "week" | "month") || "today";
+                const [keyRanking, ipRanking] = await Promise.all([
+                    getKeyRanking(env.DB, period, 100),
+                    getIPRanking(env.DB, period, 100),
+                ]);
+
+                return jsonResponse({
+                    period,
+                    keyRanking,
+                    ipRanking,
                 });
             }
 
