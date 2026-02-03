@@ -6,7 +6,7 @@
 
 <!-- dash-content-start -->
 
-D1 is Cloudflare's native serverless SQL database ([docs](https://developers.cloudflare.com/d1/)). This project demonstrates using a Worker with a D1 binding to execute a SQL statement. A simple frontend displays the result of this query:
+D1 is Cloudflare's native serverless SQL database. ([docs](https://developers.cloudflare.com/d1/)). This project demonstrates using a Worker with a D1 binding to execute a SQL statement. A simple frontend displays the result of this query:
 
 ```SQL
 SELECT * FROM comments LIMIT 3;
