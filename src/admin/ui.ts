@@ -670,7 +670,9 @@ export function renderAdminUI(): string {
     </div>
 
     <script>
-        const API_BASE = '/admin/api';
+        // Get current admin path from URL
+        const currentPath = window.location.pathname.replace(/\\/+$/, '');
+        const API_BASE = currentPath + '/api';
         const PAGE_SIZE = 20;
 
         // Pagination state
@@ -1282,7 +1284,7 @@ export function renderLoginPage(error?: string): string {
     <div class="login-card">
         <h1>管理员登录</h1>
         ${error ? `<div class="error">${error}</div>` : ''}
-        <form method="POST" action="/admin/login">
+        <form method="POST" action="">
             <div class="form-group">
                 <label class="form-label">密码</label>
                 <input type="password" name="password" class="form-input" required autofocus>

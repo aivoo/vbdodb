@@ -8,6 +8,8 @@ declare namespace Cloudflare {
 	interface Env {
 		DB: D1Database;
 		ADMIN_PASSWORD: string;
+		ADMIN_PATH: string;
+		ADMIN_ACCESS_KEY: string;
 		MANUS_HOST: string;
 		MANUS_LOCALE: string;
 		MANUS_TZ: string;

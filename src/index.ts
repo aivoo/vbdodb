@@ -45,6 +45,25 @@ function getClientIP(request: Request): string {
            "unknown";
 }
 
+// Admin path helper - returns the admin path with leading slash
+function getAdminPath(env: Env): string {
+    const path = env.ADMIN_PATH || "admin";
+    return `/${path}`;
+}
+
+// Validate admin access key if configured
+function validateAdminAccessKey(request: Request, env: Env): boolean {
+    const accessKey = env.ADMIN_ACCESS_KEY;
+    // If no access key is configured, allow access
+    if (!accessKey || accessKey === "") {
+        return true;
+    }
+    // Check URL parameter
+    const url = new URL(request.url);
+    const providedKey = url.searchParams.get("key");
+    return providedKey === accessKey;
+}
+
 export default {
     async fetch(request: Request, env: Env): Promise<Response> {
         const url = new URL(request.url);
@@ -147,13 +166,24 @@ export default {
         }
 
         // Admin Login Routes
-        if (path === "/admin/login" && method === "GET") {
+        const adminPath = getAdminPath(env);
+
+        if (path === `${adminPath}/login` && method === "GET") {
+            // Validate access key for login page
+            if (!validateAdminAccessKey(request, env)) {
+                return errorResponse("Not found", 404);
+            }
             return new Response(renderLoginPage(), {
                 headers: { "Content-Type": "text/html" },
             });
         }
 
-        if (path === "/admin/login" && method === "POST") {
+        if (path === `${adminPath}/login` && method === "POST") {
+            // Validate access key for login submission
+            if (!validateAdminAccessKey(request, env)) {
+                return errorResponse("Not found", 404);
+            }
+
             const formData = await request.formData();
             const password = formData.get("password");
 
@@ -166,41 +196,58 @@ export default {
                 // Clean up expired sessions periodically
                 await cleanExpiredSessions(env.DB);
 
+                // Preserve access key in redirect if configured
+                const accessKey = env.ADMIN_ACCESS_KEY;
+                const redirectUrl = accessKey ? `${adminPath}?key=${accessKey}` : adminPath;
+
                 return new Response(null, {
                     status: 302,
                     headers: {
-                        "Location": "/admin",
+                        "Location": redirectUrl,
                         "Set-Cookie": `session=${sessionToken}; Path=/; HttpOnly; SameSite=Strict; Max-Age=86400`,
                     },
                 });
             }
 
-            return new Response(renderLoginPage("Invalid password"), {
+            return new Response(renderLoginPage("密码错误"), {
                 status: 401,
                 headers: { "Content-Type": "text/html" },
             });
         }
 
-        if (path === "/admin/logout") {
+        if (path === `${adminPath}/logout`) {
             const session = getSessionFromCookie(request);
             if (session) {
                 await deleteSession(env.DB, session);
             }
+            // Preserve access key in redirect if configured
+            const accessKey = env.ADMIN_ACCESS_KEY;
+            const redirectUrl = accessKey ? `${adminPath}/login?key=${accessKey}` : `${adminPath}/login`;
+
             return new Response(null, {
                 status: 302,
                 headers: {
-                    "Location": "/admin/login",
+                    "Location": redirectUrl,
                     "Set-Cookie": "session=; Path=/; HttpOnly; Max-Age=0",
                 },
             });
         }
 
         // Admin UI Route (requires session authentication)
-        if (path === "/admin" || path === "/admin/") {
+        if (path === adminPath || path === `${adminPath}/`) {
+            // Validate access key first
+            if (!validateAdminAccessKey(request, env)) {
+                return errorResponse("Not found", 404);
+            }
+
             if (!(await isValidSession(request, env.DB))) {
+                // Preserve access key in redirect if configured
+                const accessKey = env.ADMIN_ACCESS_KEY;
+                const redirectUrl = accessKey ? `${adminPath}/login?key=${accessKey}` : `${adminPath}/login`;
+
                 return new Response(null, {
                     status: 302,
-                    headers: { "Location": "/admin/login" },
+                    headers: { "Location": redirectUrl },
                 });
             }
             return new Response(renderAdminUI(), {
@@ -209,13 +256,13 @@ export default {
         }
 
         // Admin API Routes (require session authentication)
-        if (path.startsWith("/admin/api/")) {
+        if (path.startsWith(`${adminPath}/api/`)) {
             if (!(await isValidSession(request, env.DB))) {
                 return errorResponse("Unauthorized", 401);
             }
 
             // Stats API
-            if (path === "/admin/api/stats" && method === "GET") {
+            if (path === `${adminPath}/api/stats` && method === "GET") {
                 const [todayStats, weekStats, monthStats, recentLogs] = await Promise.all([
                     getRequestStats(env.DB, "today"),
                     getRequestStats(env.DB, "week"),
@@ -232,7 +279,7 @@ export default {
             }
 
             // Ranking API
-            if (path === "/admin/api/ranking" && method === "GET") {
+            if (path === `${adminPath}/api/ranking` && method === "GET") {
                 const period = (url.searchParams.get("period") as "today" | "week" | "month") || "today";
                 const [keyRanking, ipRanking] = await Promise.all([
                     getKeyRanking(env.DB, period, 100),
@@ -247,7 +294,7 @@ export default {
             }
 
             // Cleanup API (for maintenance)
-            if (path === "/admin/api/cleanup" && method === "POST") {
+            if (path === `${adminPath}/api/cleanup` && method === "POST") {
                 const [expiredSessions, oldRateLimits] = await Promise.all([
                     cleanExpiredSessions(env.DB),
                     cleanOldRateLimits(env.DB),
@@ -262,7 +309,7 @@ export default {
             }
 
             // Vendor Keys API
-            if (path === "/admin/api/vendor-keys") {
+            if (path === `${adminPath}/api/vendor-keys`) {
                 if (method === "GET") {
                     return handleGetVendorKeys(env.DB);
                 }
@@ -271,7 +318,7 @@ export default {
                 }
             }
 
-            const vendorKeyMatch = path.match(/^\/admin\/api\/vendor-keys\/(\d+)$/);
+            const vendorKeyMatch = path.match(new RegExp(`^${adminPath}/api/vendor-keys/(\\d+)$`));
             if (vendorKeyMatch) {
                 const id = parseInt(vendorKeyMatch[1]);
                 if (method === "PUT") {
@@ -283,7 +330,7 @@ export default {
             }
 
             // Custom Keys API
-            if (path === "/admin/api/custom-keys") {
+            if (path === `${adminPath}/api/custom-keys`) {
                 if (method === "GET") {
                     return handleGetCustomKeys(env.DB);
                 }
@@ -292,7 +339,7 @@ export default {
                 }
             }
 
-            const customKeyMatch = path.match(/^\/admin\/api\/custom-keys\/(\d+)$/);
+            const customKeyMatch = path.match(new RegExp(`^${adminPath}/api/custom-keys/(\\d+)$`));
             if (customKeyMatch) {
                 const id = parseInt(customKeyMatch[1]);
                 if (method === "PUT") {
@@ -304,11 +351,11 @@ export default {
             }
         }
 
-        // Root redirect to admin
+        // Root redirect - don't auto redirect to admin for security
         if (path === "/" || path === "") {
-            return new Response(null, {
-                status: 302,
-                headers: { "Location": "/admin" },
+            return jsonResponse({
+                status: "ok",
+                message: "API server is running",
             });
         }
 
