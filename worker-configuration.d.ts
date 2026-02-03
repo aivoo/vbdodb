@@ -16,7 +16,6 @@ declare namespace Cloudflare {
 		MANUS_TASK_MODE: string;
 		MANUS_COUNTRY_ISO: string;
 		MODEL_NAME: string;
-		PROMPT_WATERMARK_ENABLED: string;
 		RATE_LIMIT_REQUESTS: string;
 		RATE_LIMIT_WINDOW_SECONDS: string;
 		WS_TIMEOUT_MS: string;
