@@ -14,6 +14,7 @@ import {
 } from "../db/queries";
 import { logRequest } from "../db/logs";
 import { extractBearerToken, errorResponse, jsonResponse, corsHeaders } from "../utils/helpers";
+import { verifyWatermark } from "../utils/watermark";
 
 // -------------------- Configuration Interface --------------------
 interface ProxyConfig {
@@ -39,6 +40,8 @@ const DEFAULT_CONFIG: ProxyConfig = {
     wsResponseTimeoutMs: 25000,
 };
 
+const WATERMARK_FAIL_MESSAGE = "Hello, I am vb.do";
+
 function getConfig(env?: Env): ProxyConfig {
     if (!env) return DEFAULT_CONFIG;
     return {
@@ -51,6 +54,16 @@ function getConfig(env?: Env): ProxyConfig {
         wsTimeoutMs: parseInt(env.WS_TIMEOUT_MS) || DEFAULT_CONFIG.wsTimeoutMs,
         wsResponseTimeoutMs: parseInt(env.WS_RESPONSE_TIMEOUT_MS) || DEFAULT_CONFIG.wsResponseTimeoutMs,
     };
+}
+
+function isWatermarkCheckEnabled(env?: Env): boolean {
+    if (!env) return true;
+    const raw = env.PROMPT_WATERMARK_ENABLED;
+    if (raw == null || String(raw).trim() === "") return true;
+    const normalized = String(raw).trim().toLowerCase();
+    if (["0", "false", "off", "no"].includes(normalized)) return false;
+    if (["1", "true", "on", "yes"].includes(normalized)) return true;
+    return true;
 }
 
 const MANUS_CLIENT_TYPE = "web";
@@ -191,6 +204,37 @@ function extractTextFromContent(content: unknown): string {
         if (typeof obj.text === "string") return obj.text;
     }
     return "";
+}
+
+function verifyWatermarkFromMessages(messages: Message[]): { ok: boolean; error?: string } {
+    const systemTexts: string[] = [];
+    let lastError = "Prompt watermark verification failed";
+
+    for (const m of messages) {
+        const role = String(m?.role || "").trim();
+        if (role !== "system") continue;
+        const text = extractTextFromContent(m?.content);
+        if (!text) continue;
+        systemTexts.push(text);
+        const result = verifyWatermark(text);
+        if (result.ok) {
+            return { ok: true };
+        }
+        if (result.error) lastError = result.error;
+    }
+
+    if (systemTexts.length > 1) {
+        const combined = systemTexts.join("\n");
+        const result = verifyWatermark(combined);
+        if (result.ok) return { ok: true };
+        if (result.error) lastError = result.error;
+    }
+
+    if (systemTexts.length === 0) {
+        return { ok: false, error: "No system prompt" };
+    }
+
+    return { ok: false, error: lastError };
 }
 
 function buildPromptFromChatMessages(messages: Message[] | undefined, attachmentNotes: string = ""): string {
@@ -992,29 +1036,10 @@ export async function handleChatCompletions(request: Request, db: D1Database, en
         return errorResponse(validation.error || "Invalid API key", 401);
     }
 
-    // Select the least used available vendor key
-    const vendorKey = await selectRandomAvailableVendorKey(db);
-    if (!vendorKey) {
-        await logRequest(db, {
-            customKeyId: validation.key.id,
-            endpoint: "/v1/chat/completions",
-            method: "POST",
-            statusCode: 503,
-            responseTimeMs: Date.now() - startTime,
-            ip,
-            userAgent,
-            error: "No available vendor keys",
-        });
-        return errorResponse("No available vendor keys", 503);
-    }
-
-    const token = vendorKey.api_key;
-
     const body = (await request.json().catch(() => null)) as ChatCompletionsBody | null;
     if (!body) {
         await logRequest(db, {
             customKeyId: validation.key.id,
-            vendorKeyId: vendorKey.id,
             endpoint: "/v1/chat/completions",
             method: "POST",
             statusCode: 400,
@@ -1030,7 +1055,6 @@ export async function handleChatCompletions(request: Request, db: D1Database, en
     if (model !== config.modelName) {
         await logRequest(db, {
             customKeyId: validation.key.id,
-            vendorKeyId: vendorKey.id,
             endpoint: "/v1/chat/completions",
             method: "POST",
             statusCode: 400,
@@ -1046,7 +1070,6 @@ export async function handleChatCompletions(request: Request, db: D1Database, en
     if (!Array.isArray(messages) || messages.length === 0) {
         await logRequest(db, {
             customKeyId: validation.key.id,
-            vendorKeyId: vendorKey.id,
             endpoint: "/v1/chat/completions",
             method: "POST",
             statusCode: 400,
@@ -1062,6 +1085,102 @@ export async function handleChatCompletions(request: Request, db: D1Database, en
 
     // Extract prompts for logging
     const { systemPrompt, userPrompt } = extractPromptsForLogging(messages);
+
+    if (isWatermarkCheckEnabled(env)) {
+        const watermarkResult = verifyWatermarkFromMessages(messages);
+        if (!watermarkResult.ok) {
+            await incrementCustomKeyUsage(db, validation.key.id);
+            await logRequest(db, {
+                customKeyId: validation.key.id,
+                endpoint: "/v1/chat/completions",
+                method: "POST",
+                statusCode: 200,
+                responseTimeMs: Date.now() - startTime,
+                ip,
+                userAgent,
+                error: watermarkResult.error || "Prompt watermark verification failed",
+                systemPrompt,
+                userPrompt,
+            });
+
+            if (!stream) {
+                const chatId = `chatcmpl-${randId(29)}`;
+                const openAIResponse = {
+                    id: chatId,
+                    object: "chat.completion",
+                    created: nowUnixS(),
+                    model: config.modelName,
+                    choices: [
+                        {
+                            index: 0,
+                            message: { role: "assistant", content: WATERMARK_FAIL_MESSAGE },
+                            finish_reason: "stop",
+                        },
+                    ],
+                    usage: null,
+                };
+                return jsonResponse(openAIResponse);
+            }
+
+            const { readable, writable } = new TransformStream<Uint8Array>();
+            const writer = writable.getWriter();
+            const encoder = new TextEncoder();
+            const chatId = `chatcmpl-${randId(29)}`;
+            const firstChunk = {
+                id: chatId,
+                object: "chat.completion.chunk",
+                created: nowUnixS(),
+                model: config.modelName,
+                choices: [
+                    {
+                        index: 0,
+                        delta: { role: "assistant", content: WATERMARK_FAIL_MESSAGE },
+                        finish_reason: null,
+                    },
+                ],
+            };
+            const finalChunk = {
+                id: chatId,
+                object: "chat.completion.chunk",
+                created: nowUnixS(),
+                model: config.modelName,
+                choices: [{ index: 0, delta: {}, finish_reason: "stop" }],
+            };
+            writer.write(encoder.encode(`data: ${JSON.stringify(firstChunk)}\n\n`));
+            writer.write(encoder.encode(`data: ${JSON.stringify(finalChunk)}\n\n`));
+            writer.write(encoder.encode("data: [DONE]\n\n"));
+            writer.close();
+
+            return new Response(readable, {
+                headers: {
+                    ...corsHeaders(),
+                    "Content-Type": "text/event-stream; charset=utf-8",
+                    "Cache-Control": "no-cache",
+                    Connection: "keep-alive",
+                },
+            });
+        }
+    }
+
+    // Select the least used available vendor key
+    const vendorKey = await selectRandomAvailableVendorKey(db);
+    if (!vendorKey) {
+        await logRequest(db, {
+            customKeyId: validation.key.id,
+            endpoint: "/v1/chat/completions",
+            method: "POST",
+            statusCode: 503,
+            responseTimeMs: Date.now() - startTime,
+            ip,
+            userAgent,
+            error: "No available vendor keys",
+            systemPrompt,
+            userPrompt,
+        });
+        return errorResponse("No available vendor keys", 503);
+    }
+
+    const token = vendorKey.api_key;
 
     // 1) Attachment parsing + upload
     const rawItems = extractAttachmentsFromChat(messages);
@@ -1237,29 +1356,10 @@ export async function handleResponses(request: Request, db: D1Database, env?: En
         return errorResponse(validation.error || "Invalid API key", 401);
     }
 
-    // Select the least used available vendor key
-    const vendorKey = await selectRandomAvailableVendorKey(db);
-    if (!vendorKey) {
-        await logRequest(db, {
-            customKeyId: validation.key.id,
-            endpoint: "/v1/responses",
-            method: "POST",
-            statusCode: 503,
-            responseTimeMs: Date.now() - startTime,
-            ip,
-            userAgent,
-            error: "No available vendor keys",
-        });
-        return errorResponse("No available vendor keys", 503);
-    }
-
-    const token = vendorKey.api_key;
-
     const body = (await request.json().catch(() => null)) as ResponsesBody | null;
     if (!body) {
         await logRequest(db, {
             customKeyId: validation.key.id,
-            vendorKeyId: vendorKey.id,
             endpoint: "/v1/responses",
             method: "POST",
             statusCode: 400,
@@ -1275,7 +1375,6 @@ export async function handleResponses(request: Request, db: D1Database, env?: En
     if (model !== config.modelName) {
         await logRequest(db, {
             customKeyId: validation.key.id,
-            vendorKeyId: vendorKey.id,
             endpoint: "/v1/responses",
             method: "POST",
             statusCode: 400,
@@ -1289,35 +1388,7 @@ export async function handleResponses(request: Request, db: D1Database, env?: En
 
     const stream = !!body.stream;
 
-    // Extract prompts for logging
-    const { systemPrompt, userPrompt } = extractPromptsFromResponsesForLogging(body);
-
-    // 1) Attachment parsing + upload
-    const rawItems = extractAttachmentsFromResponses(body);
-    const attachments: ManusAttachment[] = [];
-    for (const it of rawItems) {
-        attachments.push(await materializeOpenAIAttachment(token, it, config));
-    }
-
-    // 2) prompt + attachment notes
-    let notes = "";
-    if (attachments.length) {
-        notes =
-            "【Attachments】\n" +
-            attachments.map((a) => `- ${a.filename} (${a.contentType})`).join("\n");
-    }
-    const prompt = buildPromptFromResponsesRequest(body, notes);
-
-    // Increment usage counters
-    await Promise.all([
-        incrementVendorKeyUsage(db, vendorKey.id),
-        incrementCustomKeyUsage(db, validation.key.id),
-    ]);
-
-    // Capture key IDs for use in async closures
-    const customKeyId = validation.key.id;
-
-    // 3) Build response object
+    // 3) Build response object (used for normal and watermark fallback)
     const respId = `resp_${cryptoRandomHex(16)}`;
     const msgId = `msg_${cryptoRandomHex(16)}`;
     const createdAt = nowUnixS();
@@ -1372,6 +1443,129 @@ export async function handleResponses(request: Request, db: D1Database, env?: En
             metadata: bodyMetadata,
         };
     }
+
+    // Extract prompts for logging
+    const { systemPrompt, userPrompt } = extractPromptsFromResponsesForLogging(body);
+
+    if (isWatermarkCheckEnabled(env)) {
+        const instructions = typeof body.instructions === "string" ? body.instructions : "";
+        const watermarkResult = instructions ? verifyWatermark(instructions) : { ok: false, error: "No system prompt" };
+        if (!watermarkResult.ok) {
+            await incrementCustomKeyUsage(db, validation.key.id);
+            await logRequest(db, {
+                customKeyId: validation.key.id,
+                endpoint: "/v1/responses",
+                method: "POST",
+                statusCode: 200,
+                responseTimeMs: Date.now() - startTime,
+                ip,
+                userAgent,
+                error: watermarkResult.error || "Prompt watermark verification failed",
+                systemPrompt,
+                userPrompt,
+            });
+
+            if (!stream) {
+                return jsonResponse(makeResponseObj("completed", WATERMARK_FAIL_MESSAGE));
+            }
+
+            const { readable, writable } = new TransformStream<Uint8Array>();
+            const writer = writable.getWriter();
+            const encoder = new TextEncoder();
+
+            const sseEvent = (eventName: string, dataObj: unknown): string => {
+                return `event: ${eventName}\n` + `data: ${JSON.stringify(dataObj)}\n\n`;
+            };
+
+            let seq = 1;
+            const createdEvent = sseEvent("response.created", {
+                type: "response.created",
+                response: makeResponseObj("in_progress", null),
+                sequence_number: seq++,
+            });
+            const deltaEvent = sseEvent("response.output_text.delta", {
+                type: "response.output_text.delta",
+                item_id: msgId,
+                output_index: 0,
+                content_index: 0,
+                delta: WATERMARK_FAIL_MESSAGE,
+                sequence_number: seq++,
+            });
+            const doneEvent = sseEvent("response.output_text.done", {
+                type: "response.output_text.done",
+                item_id: msgId,
+                output_index: 0,
+                content_index: 0,
+                text: WATERMARK_FAIL_MESSAGE,
+                sequence_number: seq++,
+            });
+            const completedEvent = sseEvent("response.completed", {
+                type: "response.completed",
+                response: makeResponseObj("completed", WATERMARK_FAIL_MESSAGE),
+                sequence_number: seq++,
+            });
+
+            writer.write(encoder.encode(createdEvent));
+            writer.write(encoder.encode(deltaEvent));
+            writer.write(encoder.encode(doneEvent));
+            writer.write(encoder.encode(completedEvent));
+            writer.close();
+
+            return new Response(readable, {
+                headers: {
+                    ...corsHeaders(),
+                    "Content-Type": "text/event-stream; charset=utf-8",
+                    "Cache-Control": "no-cache",
+                    Connection: "keep-alive",
+                },
+            });
+        }
+    }
+
+    // Select the least used available vendor key
+    const vendorKey = await selectRandomAvailableVendorKey(db);
+    if (!vendorKey) {
+        await logRequest(db, {
+            customKeyId: validation.key.id,
+            endpoint: "/v1/responses",
+            method: "POST",
+            statusCode: 503,
+            responseTimeMs: Date.now() - startTime,
+            ip,
+            userAgent,
+            error: "No available vendor keys",
+            systemPrompt,
+            userPrompt,
+        });
+        return errorResponse("No available vendor keys", 503);
+    }
+
+    const token = vendorKey.api_key;
+
+    // 1) Attachment parsing + upload
+    const rawItems = extractAttachmentsFromResponses(body);
+    const attachments: ManusAttachment[] = [];
+    for (const it of rawItems) {
+        attachments.push(await materializeOpenAIAttachment(token, it, config));
+    }
+
+    // 2) prompt + attachment notes
+    let notes = "";
+    if (attachments.length) {
+        notes =
+            "【Attachments】\n" +
+            attachments.map((a) => `- ${a.filename} (${a.contentType})`).join("\n");
+    }
+    const prompt = buildPromptFromResponsesRequest(body, notes);
+
+    // Increment usage counters
+    await Promise.all([
+        incrementVendorKeyUsage(db, vendorKey.id),
+        incrementCustomKeyUsage(db, validation.key.id),
+    ]);
+
+    // Capture key IDs for use in async closures
+    const customKeyId = validation.key.id;
 
     try {
         if (!stream) {

@@ -11,18 +11,11 @@ const DEFAULT_SALT = "vbdo-wm-2026";
  * FNV-1a 32-bit hash function
  */
 function fnv1a32(str: string): number {
-    let hash = 2166136261; // FNV offset basis
-    const encoder = new TextEncoder();
-    const bytes = encoder.encode(str);
-
-    for (let i = 0; i < bytes.length; i++) {
-        hash ^= bytes[i];
-        // FNV prime: 16777619
-        // Use Math.imul for proper 32-bit multiplication
-        hash = Math.imul(hash, 16777619);
+    let hash = 0x811c9dc5;
+    for (let i = 0; i < str.length; i += 1) {
+        hash ^= str.charCodeAt(i);
+        hash = Math.imul(hash, 0x01000193);
     }
-
-    // Convert to unsigned 32-bit integer
     return hash >>> 0;
 }
 
