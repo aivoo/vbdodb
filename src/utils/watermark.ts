@@ -94,6 +94,8 @@ export function verifyWatermark(
 
     // Remove zero-width chars to get stripped prompt
     const strippedPrompt = removeZeroWidth(systemPrompt);
+    // Frontend appends a newline before the watermark; normalize to match signed prompt
+    const normalizedPrompt = strippedPrompt.replace(/\r?\n$/, "");
 
     // Parse token: v1|bucket|sig
     const parts = token.split("|");
@@ -124,7 +126,7 @@ export function verifyWatermark(
     }
 
     // Calculate expected signature
-    const payload = `${version}|${bucketStr}|${strippedPrompt}|${salt}`;
+    const payload = `${version}|${bucketStr}|${normalizedPrompt}|${salt}`;
     const expectedSig = fnv1a32(payload).toString(36);
 
     // Verify signature
@@ -132,7 +134,7 @@ export function verifyWatermark(
         return { ok: false, error: "Signature mismatch" };
     }
 
-    return { ok: true, strippedPrompt };
+    return { ok: true, strippedPrompt: normalizedPrompt };
 }
 
 /**
