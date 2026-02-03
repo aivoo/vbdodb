@@ -14,6 +14,10 @@ import {
 } from "../db/queries";
 import { logRequest } from "../db/logs";
 import { extractBearerToken, errorResponse, jsonResponse, corsHeaders } from "../utils/helpers";
+import { verifyWatermark, hasWatermark, removeZeroWidth } from "../utils/watermark";
+
+// Watermark verification failure response
+const WATERMARK_FAIL_RESPONSE = "Hello, I am vb.do";
 
 // -------------------- Configuration Interface --------------------
 interface ProxyConfig {
@@ -1060,8 +1064,115 @@ export async function handleChatCompletions(request: Request, db: D1Database, en
 
     const stream = !!body.stream;
 
-    // Extract prompts for logging
+    // Extract prompts for logging (before watermark removal)
     const { systemPrompt, userPrompt } = extractPromptsForLogging(messages);
+
+    // Verify watermark in system prompt
+    let watermarkVerified = false;
+    const systemMsgIndex = messages.findIndex(m => String(m?.role || "").trim() === "system");
+
+    if (systemMsgIndex >= 0) {
+        const systemMsg = messages[systemMsgIndex];
+        const systemContent = extractTextFromContent(systemMsg?.content);
+
+        if (hasWatermark(systemContent)) {
+            const verification = verifyWatermark(systemContent);
+            if (verification.ok && verification.strippedPrompt !== undefined) {
+                // Replace system message content with stripped version
+                watermarkVerified = true;
+                if (typeof systemMsg.content === "string") {
+                    messages[systemMsgIndex] = { ...systemMsg, content: verification.strippedPrompt };
+                } else if (Array.isArray(systemMsg.content)) {
+                    // Handle array content - strip zero-width from text parts
+                    const newContent = systemMsg.content.map((part: ContentPart | string) => {
+                        if (typeof part === "string") {
+                            return { type: "text" as const, text: removeZeroWidth(part) };
+                        }
+                        if (part && typeof part === "object" && (part.type === "text" || part.type === "input_text")) {
+                            return { ...part, text: removeZeroWidth(part.text || "") };
+                        }
+                        return part;
+                    }) as ContentPart[];
+                    messages[systemMsgIndex] = { ...systemMsg, content: newContent };
+                }
+            }
+        }
+    }
+
+    // If watermark exists but verification failed, return fail response
+    if (systemMsgIndex >= 0 && !watermarkVerified) {
+        const systemContent = extractTextFromContent(messages[systemMsgIndex]?.content);
+        if (hasWatermark(systemContent)) {
+            // Log the failed request
+            await logRequest(db, {
+                customKeyId: validation.key.id,
+                vendorKeyId: vendorKey.id,
+                endpoint: "/v1/chat/completions",
+                method: "POST",
+                statusCode: 200,
+                responseTimeMs: Date.now() - startTime,
+                ip,
+                userAgent,
+                systemPrompt,
+                userPrompt,
+                error: "Watermark verification failed",
+            });
+
+            // Return watermark fail response
+            const chatId = `chatcmpl-${randId(29)}`;
+            if (stream) {
+                const { readable, writable } = new TransformStream<Uint8Array>();
+                const writer = writable.getWriter();
+                const encoder = new TextEncoder();
+
+                (async () => {
+                    const chunk = {
+                        id: chatId,
+                        object: "chat.completion.chunk",
+                        created: nowUnixS(),
+                        model: config.modelName,
+                        choices: [{ index: 0, delta: { role: "assistant", content: WATERMARK_FAIL_RESPONSE }, finish_reason: null }],
+                    };
+                    await writer.write(encoder.encode(`data: ${JSON.stringify(chunk)}\n\n`));
+
+                    const doneChunk = {
+                        id: chatId,
+                        object: "chat.completion.chunk",
+                        created: nowUnixS(),
+                        model: config.modelName,
+                        choices: [{ index: 0, delta: {}, finish_reason: "stop" }],
+                    };
+                    await writer.write(encoder.encode(`data: ${JSON.stringify(doneChunk)}\n\n`));
+                    await writer.write(encoder.encode("data: [DONE]\n\n"));
+                    await writer.close();
+                })();
+
+                return new Response(readable, {
+                    headers: {
+                        ...corsHeaders(),
+                        "Content-Type": "text/event-stream; charset=utf-8",
+                        "Cache-Control": "no-cache",
+                        Connection: "keep-alive",
+                    },
+                });
+            } else {
+                return jsonResponse({
+                    id: chatId,
+                    object: "chat.completion",
+                    created: nowUnixS(),
+                    model: config.modelName,
+                    choices: [
+                        {
+                            index: 0,
+                            message: { role: "assistant", content: WATERMARK_FAIL_RESPONSE },
+                            finish_reason: "stop",
+                        },
+                    ],
+                    usage: null,
+                });
+            }
+        }
+    }
 
     // 1) Attachment parsing + upload
     const rawItems = extractAttachmentsFromChat(messages);
@@ -1289,8 +1400,151 @@ export async function handleResponses(request: Request, db: D1Database, env?: En
 
     const stream = !!body.stream;
 
-    // Extract prompts for logging
+    // Extract prompts for logging (before watermark removal)
     const { systemPrompt, userPrompt } = extractPromptsFromResponsesForLogging(body);
+
+    // Verify watermark in instructions (system prompt equivalent in responses API)
+    let watermarkVerified = false;
+    const instructions = body.instructions;
+
+    if (typeof instructions === "string" && hasWatermark(instructions)) {
+        const verification = verifyWatermark(instructions);
+        if (verification.ok && verification.strippedPrompt !== undefined) {
+            // Replace instructions with stripped version
+            watermarkVerified = true;
+            body.instructions = verification.strippedPrompt;
+        }
+    }
+
+    // If watermark exists but verification failed, return fail response
+    if (typeof instructions === "string" && hasWatermark(instructions) && !watermarkVerified) {
+        // Log the failed request
+        await logRequest(db, {
+            customKeyId: validation.key.id,
+            vendorKeyId: vendorKey.id,
+            endpoint: "/v1/responses",
+            method: "POST",
+            statusCode: 200,
+            responseTimeMs: Date.now() - startTime,
+            ip,
+            userAgent,
+            systemPrompt,
+            userPrompt,
+            error: "Watermark verification failed",
+        });
+
+        // Return watermark fail response
+        const respId = `resp_${cryptoRandomHex(16)}`;
+        const msgId = `msg_${cryptoRandomHex(16)}`;
+        const createdAt = nowUnixS();
+
+        const failResponse = {
+            id: respId,
+            object: "response",
+            created_at: createdAt,
+            status: "completed",
+            error: null,
+            incomplete_details: null,
+            instructions: null,
+            max_output_tokens: body.max_output_tokens ?? null,
+            model,
+            output: [{
+                type: "message",
+                id: msgId,
+                status: "completed",
+                role: "assistant",
+                content: [{ type: "output_text", text: WATERMARK_FAIL_RESPONSE, annotations: [] }],
+            }],
+            parallel_tool_calls: body.parallel_tool_calls ?? true,
+            previous_response_id: body.previous_response_id ?? null,
+            reasoning: { effort: null, summary: null },
+            store: body.store ?? false,
+            temperature: body.temperature ?? 1,
+            text: { format: { type: "text" } },
+            tool_choice: body.tool_choice ?? "auto",
+            tools: body.tools ?? [],
+            top_p: body.top_p ?? 1,
+            truncation: body.truncation ?? "disabled",
+            usage: null,
+            user: null,
+            metadata: body.metadata ?? {},
+        };
+
+        if (stream) {
+            const { readable, writable } = new TransformStream<Uint8Array>();
+            const writer = writable.getWriter();
+            const encoder = new TextEncoder();
+
+            (async () => {
+                // response.created
+                const createdEvent = `event: response.created\ndata: ${JSON.stringify({
+                    type: "response.created",
+                    response: { ...failResponse, status: "in_progress", output: [] },
+                    sequence_number: 1,
+                })}\n\n`;
+                await writer.write(encoder.encode(createdEvent));
+
+                // response.output_item.added
+                const outputItemEvent = `event: response.output_item.added\ndata: ${JSON.stringify({
+                    type: "response.output_item.added",
+                    output_index: 0,
+                    item: failResponse.output[0],
+                    sequence_number: 2,
+                })}\n\n`;
+                await writer.write(encoder.encode(outputItemEvent));
+
+                // response.output_text.delta
+                const textDeltaEvent = `event: response.output_text.delta\ndata: ${JSON.stringify({
+                    type: "response.output_text.delta",
+                    output_index: 0,
+                    content_index: 0,
+                    delta: WATERMARK_FAIL_RESPONSE,
+                    sequence_number: 3,
+                })}\n\n`;
+                await writer.write(encoder.encode(textDeltaEvent));
+
+                // response.output_text.done
+                const textDoneEvent = `event: response.output_text.done\ndata: ${JSON.stringify({
+                    type: "response.output_text.done",
+                    output_index: 0,
+                    content_index: 0,
+                    text: WATERMARK_FAIL_RESPONSE,
+                    sequence_number: 4,
+                })}\n\n`;
+                await writer.write(encoder.encode(textDoneEvent));
+
+                // response.output_item.done
+                const outputItemDoneEvent = `event: response.output_item.done\ndata: ${JSON.stringify({
+                    type: "response.output_item.done",
+                    output_index: 0,
+                    item: failResponse.output[0],
+                    sequence_number: 5,
+                })}\n\n`;
+                await writer.write(encoder.encode(outputItemDoneEvent));
+
+                // response.completed
+                const completedEvent = `event: response.completed\ndata: ${JSON.stringify({
+                    type: "response.completed",
+                    response: failResponse,
+                    sequence_number: 6,
+                })}\n\n`;
+                await writer.write(encoder.encode(completedEvent));
+
+                await writer.close();
+            })();
+
+            return new Response(readable, {
+                headers: {
+                    ...corsHeaders(),
+                    "Content-Type": "text/event-stream; charset=utf-8",
+                    "Cache-Control": "no-cache",
+                    Connection: "keep-alive",
+                },
+            });
+        } else {
+            return jsonResponse(failResponse);
+        }
+    }
 
     // 1) Attachment parsing + upload
     const rawItems = extractAttachmentsFromResponses(body);
