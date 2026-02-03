@@ -9,15 +9,15 @@ const DEFAULT_SALT = "vbdo-wm-2026";
 
 /**
  * FNV-1a 32-bit hash function
+ * IMPORTANT: Must match frontend implementation - iterate by character code point,
+ * not by UTF-8 bytes. This ensures consistent hashing for non-ASCII characters.
  */
 function fnv1a32(str: string): number {
-    let hash = 2166136261; // FNV offset basis
-    const encoder = new TextEncoder();
-    const bytes = encoder.encode(str);
+    let hash = 2166136261; // FNV offset basis (0x811c9dc5)
 
-    for (let i = 0; i < bytes.length; i++) {
-        hash ^= bytes[i];
-        // FNV prime: 16777619
+    for (let i = 0; i < str.length; i++) {
+        hash ^= str.charCodeAt(i);
+        // FNV prime: 16777619 (0x01000193)
         // Use Math.imul for proper 32-bit multiplication
         hash = Math.imul(hash, 16777619);
     }
