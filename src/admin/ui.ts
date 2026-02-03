@@ -348,99 +348,13 @@ export function renderAdminUI(): string {
             color: #999;
             font-size: 0.75rem;
         }
-        /* Log Cards Style */
-        .log-cards {
-            display: flex;
-            flex-direction: column;
-            gap: 12px;
-        }
-        .log-card {
-            background: #f8f9fa;
-            border-radius: 12px;
-            padding: 16px;
-            border: 1px solid #eee;
-        }
-        .log-card:hover {
-            border-color: #667eea;
-        }
-        .log-card-header {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            margin-bottom: 12px;
-            flex-wrap: wrap;
-            gap: 8px;
-        }
-        .log-card-meta {
-            display: flex;
-            gap: 12px;
-            align-items: center;
-            flex-wrap: wrap;
-        }
-        .log-card-meta span {
-            font-size: 0.8rem;
-            color: #666;
-        }
-        .log-card-body {
-            display: flex;
-            flex-direction: column;
-            gap: 8px;
-        }
-        .log-prompt-section {
-            background: white;
-            border-radius: 8px;
-            padding: 12px;
-            border: 1px solid #e9ecef;
-        }
-        .log-prompt-header {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            margin-bottom: 8px;
-        }
-        .log-prompt-label {
+        .log-prompt {
+            max-width: 300px;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
             font-size: 0.75rem;
-            font-weight: 600;
-            color: #667eea;
-            text-transform: uppercase;
-        }
-        .log-prompt-actions {
-            display: flex;
-            gap: 4px;
-        }
-        .log-prompt-content {
-            font-size: 0.85rem;
-            color: #333;
-            line-height: 1.5;
-            white-space: pre-wrap;
-            word-break: break-word;
-            max-height: 100px;
-            overflow-y: auto;
-        }
-        .log-prompt-content.expanded {
-            max-height: none;
-        }
-        .log-prompt-empty {
-            color: #aaa;
-            font-style: italic;
-        }
-        .btn-icon {
-            padding: 4px 8px;
-            font-size: 0.7rem;
-            background: #e9ecef;
-            border: none;
-            border-radius: 4px;
-            cursor: pointer;
             color: #666;
-            transition: all 0.2s;
-        }
-        .btn-icon:hover {
-            background: #667eea;
-            color: white;
-        }
-        .btn-icon.copied {
-            background: #2ed573;
-            color: white;
         }
         /* Ranking styles */
         .ranking-controls {
@@ -613,7 +527,20 @@ export function renderAdminUI(): string {
                 <h2 class="card-title">最近请求日志</h2>
                 <button class="btn btn-primary btn-sm" onclick="loadStats()">刷新</button>
             </div>
-            <div class="log-cards" id="logs-container"></div>
+            <table class="logs-table">
+                <thead>
+                    <tr>
+                        <th>时间</th>
+                        <th>端点</th>
+                        <th>状态</th>
+                        <th>响应时间</th>
+                        <th>IP</th>
+                        <th>系统提示词</th>
+                        <th>用户提示词</th>
+                    </tr>
+                </thead>
+                <tbody id="logs-table"></tbody>
+            </table>
             <div class="pagination" id="logs-pagination"></div>
         </div>
 
@@ -859,97 +786,26 @@ export function renderAdminUI(): string {
             const end = start + PAGE_SIZE;
             const pageLogs = allLogs.slice(start, end);
 
-            const logsContainer = document.getElementById('logs-container');
-            logsContainer.innerHTML = pageLogs.map((log, idx) => {
+            const logsTable = document.getElementById('logs-table');
+            logsTable.innerHTML = pageLogs.map(log => {
                 const statusClass = log.status_code >= 200 && log.status_code < 400 ? 'success' : 'error';
-                const statusText = log.status_code >= 200 && log.status_code < 400 ? '成功' : '失败';
                 const time = new Date(log.created_at).toLocaleString('zh-CN');
-                const logId = start + idx;
-
-                const sysPromptHtml = log.system_prompt
-                    ? \`<div class="log-prompt-content" id="sys-\${logId}">\${escapeHtml(log.system_prompt)}</div>\`
-                    : \`<div class="log-prompt-content log-prompt-empty">无</div>\`;
-
-                const userPromptHtml = log.user_prompt
-                    ? \`<div class="log-prompt-content" id="user-\${logId}">\${escapeHtml(log.user_prompt)}</div>\`
-                    : \`<div class="log-prompt-content log-prompt-empty">无</div>\`;
-
+                const sysPrompt = log.system_prompt ? (log.system_prompt.length > 50 ? log.system_prompt.substring(0, 50) + '...' : log.system_prompt) : '-';
+                const userPrompt = log.user_prompt ? (log.user_prompt.length > 50 ? log.user_prompt.substring(0, 50) + '...' : log.user_prompt) : '-';
                 return \`
-                    <div class="log-card">
-                        <div class="log-card-header">
-                            <div class="log-card-meta">
-                                <span class="log-status \${statusClass}">\${statusText} \${log.status_code || ''}</span>
-                                <span class="log-endpoint">\${log.endpoint}</span>
-                                <span>\${log.response_time_ms ? log.response_time_ms + 'ms' : '-'}</span>
-                            </div>
-                            <div class="log-card-meta">
-                                <span>\${log.ip_address || '未知IP'}</span>
-                                <span class="log-time">\${time}</span>
-                            </div>
-                        </div>
-                        <div class="log-card-body">
-                            <div class="log-prompt-section">
-                                <div class="log-prompt-header">
-                                    <span class="log-prompt-label">系统提示词</span>
-                                    <div class="log-prompt-actions">
-                                        \${log.system_prompt ? \`
-                                            <button class="btn-icon" onclick="toggleExpand('sys-\${logId}')" title="展开/收起">展开</button>
-                                            <button class="btn-icon" onclick="copyPrompt('sys-\${logId}', this)" title="复制">复制</button>
-                                        \` : ''}
-                                    </div>
-                                </div>
-                                \${sysPromptHtml}
-                            </div>
-                            <div class="log-prompt-section">
-                                <div class="log-prompt-header">
-                                    <span class="log-prompt-label">用户提示词</span>
-                                    <div class="log-prompt-actions">
-                                        \${log.user_prompt ? \`
-                                            <button class="btn-icon" onclick="toggleExpand('user-\${logId}')" title="展开/收起">展开</button>
-                                            <button class="btn-icon" onclick="copyPrompt('user-\${logId}', this)" title="复制">复制</button>
-                                        \` : ''}
-                                    </div>
-                                </div>
-                                \${userPromptHtml}
-                            </div>
-                        </div>
-                    </div>
+                    <tr>
+                        <td class="log-time">\${time}</td>
+                        <td><span class="log-endpoint">\${log.endpoint}</span></td>
+                        <td><span class="log-status \${statusClass}">\${log.status_code || '暂无'}</span></td>
+                        <td>\${log.response_time_ms ? log.response_time_ms + 'ms' : '暂无'}</td>
+                        <td>\${log.ip_address || '暂无'}</td>
+                        <td class="log-prompt" title="\${log.system_prompt || ''}">\${sysPrompt}</td>
+                        <td class="log-prompt" title="\${log.user_prompt || ''}">\${userPrompt}</td>
+                    </tr>
                 \`;
             }).join('');
 
             renderPagination('logs-pagination', allLogs.length, logsPage, 'setLogsPage');
-        }
-
-        function escapeHtml(text) {
-            const div = document.createElement('div');
-            div.textContent = text;
-            return div.innerHTML;
-        }
-
-        function toggleExpand(id) {
-            const el = document.getElementById(id);
-            if (el) {
-                el.classList.toggle('expanded');
-                const btn = el.parentElement.querySelector('.btn-icon');
-                if (btn) {
-                    btn.textContent = el.classList.contains('expanded') ? '收起' : '展开';
-                }
-            }
-        }
-
-        function copyPrompt(id, btn) {
-            const el = document.getElementById(id);
-            if (el) {
-                const text = el.textContent;
-                navigator.clipboard.writeText(text).then(() => {
-                    btn.textContent = '已复制';
-                    btn.classList.add('copied');
-                    setTimeout(() => {
-                        btn.textContent = '复制';
-                        btn.classList.remove('copied');
-                    }, 2000);
-                });
-            }
         }
 
         function setLogsPage(page) {
