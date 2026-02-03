@@ -14,7 +14,7 @@ import {
 } from "../db/queries";
 import { logRequest } from "../db/logs";
 import { extractBearerToken, errorResponse, jsonResponse, corsHeaders } from "../utils/helpers";
-import { verifyWatermark, hasWatermark, removeZeroWidth } from "../utils/watermark";
+import { verifyWatermark, removeZeroWidth } from "../utils/watermark";
 
 // Watermark verification failure response
 const WATERMARK_FAIL_RESPONSE = "Hello, I am vb.do";
@@ -1067,110 +1067,110 @@ export async function handleChatCompletions(request: Request, db: D1Database, en
     // Extract prompts for logging (before watermark removal)
     const { systemPrompt, userPrompt } = extractPromptsForLogging(messages);
 
-    // Verify watermark in system prompt
+    // Verify watermark in system prompt (required)
     let watermarkVerified = false;
+    let watermarkError: string | null = null;
     const systemMsgIndex = messages.findIndex(m => String(m?.role || "").trim() === "system");
 
     if (systemMsgIndex >= 0) {
         const systemMsg = messages[systemMsgIndex];
         const systemContent = extractTextFromContent(systemMsg?.content);
-
-        if (hasWatermark(systemContent)) {
-            const verification = verifyWatermark(systemContent);
-            if (verification.ok && verification.strippedPrompt !== undefined) {
-                // Replace system message content with stripped version
-                watermarkVerified = true;
-                if (typeof systemMsg.content === "string") {
-                    messages[systemMsgIndex] = { ...systemMsg, content: verification.strippedPrompt };
-                } else if (Array.isArray(systemMsg.content)) {
-                    // Handle array content - strip zero-width from text parts
-                    const newContent = systemMsg.content.map((part: ContentPart | string) => {
-                        if (typeof part === "string") {
-                            return { type: "text" as const, text: removeZeroWidth(part) };
-                        }
-                        if (part && typeof part === "object" && (part.type === "text" || part.type === "input_text")) {
-                            return { ...part, text: removeZeroWidth(part.text || "") };
-                        }
-                        return part;
-                    }) as ContentPart[];
-                    messages[systemMsgIndex] = { ...systemMsg, content: newContent };
-                }
+        const verification = verifyWatermark(systemContent);
+        if (verification.ok && verification.strippedPrompt !== undefined) {
+            // Replace system message content with stripped version
+            watermarkVerified = true;
+            if (typeof systemMsg.content === "string") {
+                messages[systemMsgIndex] = { ...systemMsg, content: verification.strippedPrompt };
+            } else if (Array.isArray(systemMsg.content)) {
+                // Handle array content - strip zero-width from text parts
+                const newContent = systemMsg.content.map((part: ContentPart | string) => {
+                    if (typeof part === "string") {
+                        return { type: "text" as const, text: removeZeroWidth(part) };
+                    }
+                    if (part && typeof part === "object" && (part.type === "text" || part.type === "input_text")) {
+                        return { ...part, text: removeZeroWidth(part.text || "") };
+                    }
+                    return part;
+                }) as ContentPart[];
+                messages[systemMsgIndex] = { ...systemMsg, content: newContent };
             }
+        } else {
+            watermarkError = verification.error ?? "Watermark verification failed";
         }
+    } else {
+        watermarkError = "System prompt missing";
     }
 
-    // If watermark exists but verification failed, return fail response
-    if (systemMsgIndex >= 0 && !watermarkVerified) {
-        const systemContent = extractTextFromContent(messages[systemMsgIndex]?.content);
-        if (hasWatermark(systemContent)) {
-            // Log the failed request
-            await logRequest(db, {
-                customKeyId: validation.key.id,
-                vendorKeyId: vendorKey.id,
-                endpoint: "/v1/chat/completions",
-                method: "POST",
-                statusCode: 200,
-                responseTimeMs: Date.now() - startTime,
-                ip,
-                userAgent,
-                systemPrompt,
-                userPrompt,
-                error: "Watermark verification failed",
-            });
+    // If watermark missing or verification failed, return fail response
+    if (!watermarkVerified) {
+        const errorMessage = watermarkError ?? "Watermark verification failed";
+        // Log the failed request
+        await logRequest(db, {
+            customKeyId: validation.key.id,
+            vendorKeyId: vendorKey.id,
+            endpoint: "/v1/chat/completions",
+            method: "POST",
+            statusCode: 200,
+            responseTimeMs: Date.now() - startTime,
+            ip,
+            userAgent,
+            systemPrompt,
+            userPrompt,
+            error: errorMessage,
+        });
 
-            // Return watermark fail response
-            const chatId = `chatcmpl-${randId(29)}`;
-            if (stream) {
-                const { readable, writable } = new TransformStream<Uint8Array>();
-                const writer = writable.getWriter();
-                const encoder = new TextEncoder();
+        // Return watermark fail response
+        const chatId = `chatcmpl-${randId(29)}`;
+        if (stream) {
+            const { readable, writable } = new TransformStream<Uint8Array>();
+            const writer = writable.getWriter();
+            const encoder = new TextEncoder();
 
-                (async () => {
-                    const chunk = {
-                        id: chatId,
-                        object: "chat.completion.chunk",
-                        created: nowUnixS(),
-                        model: config.modelName,
-                        choices: [{ index: 0, delta: { role: "assistant", content: WATERMARK_FAIL_RESPONSE }, finish_reason: null }],
-                    };
-                    await writer.write(encoder.encode(`data: ${JSON.stringify(chunk)}\n\n`));
-
-                    const doneChunk = {
-                        id: chatId,
-                        object: "chat.completion.chunk",
-                        created: nowUnixS(),
-                        model: config.modelName,
-                        choices: [{ index: 0, delta: {}, finish_reason: "stop" }],
-                    };
-                    await writer.write(encoder.encode(`data: ${JSON.stringify(doneChunk)}\n\n`));
-                    await writer.write(encoder.encode("data: [DONE]\n\n"));
-                    await writer.close();
-                })();
-
-                return new Response(readable, {
-                    headers: {
-                        ...corsHeaders(),
-                        "Content-Type": "text/event-stream; charset=utf-8",
-                        "Cache-Control": "no-cache",
-                        Connection: "keep-alive",
-                    },
-                });
-            } else {
-                return jsonResponse({
+            (async () => {
+                const chunk = {
                     id: chatId,
-                    object: "chat.completion",
+                    object: "chat.completion.chunk",
                     created: nowUnixS(),
                     model: config.modelName,
-                    choices: [
-                        {
-                            index: 0,
-                            message: { role: "assistant", content: WATERMARK_FAIL_RESPONSE },
-                            finish_reason: "stop",
-                        },
-                    ],
-                    usage: null,
-                });
-            }
+                    choices: [{ index: 0, delta: { role: "assistant", content: WATERMARK_FAIL_RESPONSE }, finish_reason: null }],
+                };
+                await writer.write(encoder.encode(`data: ${JSON.stringify(chunk)}\n\n`));
+
+                const doneChunk = {
+                    id: chatId,
+                    object: "chat.completion.chunk",
+                    created: nowUnixS(),
+                    model: config.modelName,
+                    choices: [{ index: 0, delta: {}, finish_reason: "stop" }],
+                };
+                await writer.write(encoder.encode(`data: ${JSON.stringify(doneChunk)}\n\n`));
+                await writer.write(encoder.encode("data: [DONE]\n\n"));
+                await writer.close();
+            })();
+
+            return new Response(readable, {
+                headers: {
+                    ...corsHeaders(),
+                    "Content-Type": "text/event-stream; charset=utf-8",
+                    "Cache-Control": "no-cache",
+                    Connection: "keep-alive",
+                },
+            });
+        } else {
+            return jsonResponse({
+                id: chatId,
+                object: "chat.completion",
+                created: nowUnixS(),
+                model: config.modelName,
+                choices: [
+                    {
+                        index: 0,
+                        message: { role: "assistant", content: WATERMARK_FAIL_RESPONSE },
+                        finish_reason: "stop",
+                    },
+                ],
+                usage: null,
+            });
         }
     }
 
@@ -1405,19 +1405,25 @@ export async function handleResponses(request: Request, db: D1Database, env?: En
 
     // Verify watermark in instructions (system prompt equivalent in responses API)
     let watermarkVerified = false;
+    let watermarkError: string | null = null;
     const instructions = body.instructions;
 
-    if (typeof instructions === "string" && hasWatermark(instructions)) {
+    if (typeof instructions === "string") {
         const verification = verifyWatermark(instructions);
         if (verification.ok && verification.strippedPrompt !== undefined) {
             // Replace instructions with stripped version
             watermarkVerified = true;
             body.instructions = verification.strippedPrompt;
+        } else {
+            watermarkError = verification.error ?? "Watermark verification failed";
         }
+    } else {
+        watermarkError = "Instructions missing";
     }
 
-    // If watermark exists but verification failed, return fail response
-    if (typeof instructions === "string" && hasWatermark(instructions) && !watermarkVerified) {
+    // If watermark missing or verification failed, return fail response
+    if (!watermarkVerified) {
+        const errorMessage = watermarkError ?? "Watermark verification failed";
         // Log the failed request
         await logRequest(db, {
             customKeyId: validation.key.id,
@@ -1430,7 +1436,7 @@ export async function handleResponses(request: Request, db: D1Database, env?: En
             userAgent,
             systemPrompt,
             userPrompt,
-            error: "Watermark verification failed",
+            error: errorMessage,
         });
 
         // Return watermark fail response
